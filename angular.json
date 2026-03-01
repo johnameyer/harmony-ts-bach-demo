@@ -27,10 +27,19 @@
               {
                 "glob": "**/*",
                 "input": "public"
+              },
+              {
+                "glob": "*.musicxml",
+                "input": "node_modules/Bach_chorale_FB/FB_source/musicXML_master",
+                "output": "assets/chorales"
               }
             ],
             "styles": [
+              "node_modules/bootstrap/dist/css/bootstrap.min.css",
               "src/styles.scss"
+            ],
+            "allowedCommonJsDependencies": [
+              "harmony-ts"
             ]
           },
           "configurations": {
@@ -38,8 +47,8 @@
               "budgets": [
                 {
                   "type": "initial",
-                  "maximumWarning": "500kB",
-                  "maximumError": "1MB"
+                  "maximumWarning": "1mb",
+                  "maximumError": "2mb"
                 },
                 {
                   "type": "anyComponentStyle",
