@@ -25,7 +25,8 @@
     "bootstrap": "^5.3.8",
     "harmony-ts": "^0.14.6",
     "rxjs": "~7.8.0",
-    "tslib": "^2.3.0"
+    "tslib": "^2.3.0",
+    "vexflow": "5"
   },
   "devDependencies": {
     "@angular-eslint/eslint-plugin": "^21.2.0",

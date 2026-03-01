@@ -10,7 +10,7 @@ import globals from 'globals';
 
 export default defineConfig([
     {
-        ignores: ['dist/**', 'node_modules/**', '**/*.html', 'scripts/**'],
+        ignores: ['dist/**', 'node_modules/**', '.angular/**', '**/*.html', 'scripts/**', '**/*.generated.ts'],
     },
     js.configs.recommended,
     ...tseslint.configs.recommended,
