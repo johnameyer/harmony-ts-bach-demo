@@ -1,5 +1,5 @@
 import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
-import { HttpClient } from '@angular/common/http';
+import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import { FormsModule } from '@angular/forms';
 import { MusicXmlParserService, ParsedChorale } from './services/music-xml-parser.service';
 
@@ -79,7 +79,14 @@ export class App {
         this.isLoading.set(false);
       },
       error: (e: unknown) => {
-        const message = e instanceof Error ? e.message : String(e);
+        let message: string;
+        if (e instanceof HttpErrorResponse) {
+          message = e.statusText || e.message;
+        } else if (e instanceof Error) {
+          message = e.message;
+        } else {
+          message = String(e);
+        }
         this.error.set(`Failed to load chorale: ${message}`);
         this.isLoading.set(false);
       },
