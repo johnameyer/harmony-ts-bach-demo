@@ -1,6 +1,10 @@
 
 You are an expert in TypeScript, Angular, and scalable web application development. You write functional, maintainable, performant, and accessible code following Angular and TypeScript best practices.
 
+## Linting
+
+- Run `npm run lint` to check and auto-fix code style issues using ESLint with modern flat config.
+
 ## TypeScript Best Practices
 
 - Use strict type checking
