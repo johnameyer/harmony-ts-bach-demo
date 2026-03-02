@@ -45,7 +45,11 @@ const ACCIDENTAL_TO_VEX: Record<number, string> = {
 
 const MEASURES_PER_ROW = 4;
 const SYSTEM_WIDTH = 960;
-const SYSTEM_HEIGHT = 290;
+const SYSTEM_HEIGHT = 390;
+/** Vertical offset of the VexFlow system within the SVG (leaves room for soprano top-annotations). */
+const SYSTEM_Y_OFFSET = 40;
+/** Horizontal offset; leaves room for brace/singleLeft connectors that extend left of the system. */
+const SYSTEM_X_OFFSET = 20;
 
 function noteToVexKey(noteEvent: ParsedMeasureNote, clef: 'treble' | 'bass'): string {
   if (!noteEvent.note) {
@@ -53,6 +57,29 @@ function noteToVexKey(noteEvent: ParsedMeasureNote, clef: 'treble' | 'bass'): st
   }
   const acc = ACCIDENTAL_TO_VEX[noteEvent.note.accidental as number] ?? '';
   return `${noteEvent.note.letterName.toLowerCase()}${acc}/${noteEvent.note.octavePosition}`;
+}
+
+function createStaveNote(
+  vf: Factory,
+  n: ParsedMeasureNote,
+  clef: 'treble' | 'bass',
+  stemDirection: number,
+  figurationsJustify: AnnotationVerticalJustify = AnnotationVerticalJustify.TOP,
+  figurationsTextLine = 1,
+): Note {
+  const staveNote = vf.StaveNote({
+    keys: [ noteToVexKey(n, clef) ],
+    duration: n.note ? n.vexDuration : `${n.vexDuration}r`,
+    stemDirection,
+    clef,
+  });
+  if (n.figuration) {
+    const ann = vf.Annotation({ text: n.figuration });
+    ann.setVerticalJustification(figurationsJustify);
+    ann.setTextLine(figurationsTextLine);
+    staveNote.addModifier(ann, 0);
+  }
+  return staveNote;
 }
 
 @Component({
@@ -67,6 +94,8 @@ function noteToVexKey(noteEvent: ParsedMeasureNote, clef: 'treble' | 'bass'): st
   `,
   styles: [ `
     .chorale-score { overflow-x: auto; }
+    /* Allow VexFlow annotations that extend beyond the SVG bounds to remain visible */
+    .chorale-score svg { overflow: visible; }
   ` ],
 })
 export class ChoraleScoreComponent {
@@ -133,7 +162,7 @@ export class ChoraleScoreComponent {
       renderer: { elementId: containerId, width: SYSTEM_WIDTH, height: SYSTEM_HEIGHT },
     });
 
-    const system = vf.System({ x: 10, y: 10, width: SYSTEM_WIDTH - 20, autoWidth: false });
+    const system = vf.System({ x: SYSTEM_X_OFFSET, y: SYSTEM_Y_OFFSET, width: SYSTEM_WIDTH - SYSTEM_X_OFFSET * 2, autoWidth: false });
 
     const soprano: Note[] = [];
     const alto: Note[] = [];
@@ -155,41 +184,22 @@ export class ChoraleScoreComponent {
       const fb = measure.figuredBass;
 
       sopranoNotes.forEach((n) => {
-        soprano.push(vf.StaveNote({
-          keys: [ noteToVexKey(n, 'treble') ],
-          duration: n.note ? n.vexDuration : `${n.vexDuration}r`,
-          stemDirection: 1,
-          clef: 'treble',
-        }));
+        soprano.push(createStaveNote(vf, n, 'treble', 1));
       });
 
       altoNotes.forEach((n) => {
-        alto.push(vf.StaveNote({
-          keys: [ noteToVexKey(n, 'treble') ],
-          duration: n.note ? n.vexDuration : `${n.vexDuration}r`,
-          stemDirection: -1,
-          clef: 'treble',
-        }));
+        alto.push(createStaveNote(vf, n, 'treble', -1, AnnotationVerticalJustify.BOTTOM));
       });
 
       tenorNotes.forEach((n) => {
-        tenor.push(vf.StaveNote({
-          keys: [ noteToVexKey(n, 'bass') ],
-          duration: n.note ? n.vexDuration : `${n.vexDuration}r`,
-          stemDirection: 1,
-          clef: 'bass',
-        }));
+        tenor.push(createStaveNote(vf, n, 'bass', 1));
       });
 
       bassNotes.forEach((n, noteIdx) => {
-        const bassNote = vf.StaveNote({
-          keys: [ noteToVexKey(n, 'bass') ],
-          duration: n.note ? n.vexDuration : `${n.vexDuration}r`,
-          stemDirection: -1,
-          clef: 'bass',
-        });
-
         const figures = fb[noteIdx] ?? [];
+        // Figuration label goes below figured-bass annotations; offset by their count
+        const bassNote = createStaveNote(vf, n, 'bass', -1, AnnotationVerticalJustify.BOTTOM, figures.length + 1);
+
         figures.forEach((fig, figIdx) => {
           const ann = vf.Annotation({ text: fig, vJustify: 'bottom' });
           ann.setVerticalJustification(AnnotationVerticalJustify.BOTTOM);
