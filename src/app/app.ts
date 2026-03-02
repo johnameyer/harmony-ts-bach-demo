@@ -33,3 +33,4 @@ import { ParsedChorale } from './services/music-xml-parser.service';
 export class App {
   protected readonly result = signal<ParsedChorale | null>(null);
 }
+
