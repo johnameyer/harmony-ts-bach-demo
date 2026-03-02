@@ -1,6 +1,6 @@
 import { AbsoluteNote, ComplexInterval } from 'harmony-ts';
 
-export type FigurationLabel = 'P?' | 'N?' | 'CS?' | 'ET?' | 'App?';
+export type FigurationLabel = 'P?' | 'N?' | 'CS?' | 'ET?' | 'App?' | 'Ant?' | 'Sus?';
 
 /**
  * Returns true if the VexFlow duration string represents a note shorter than a
@@ -36,6 +36,7 @@ function getIntervalSize(from: AbsoluteNote, to: AbsoluteNote): number {
  * melodic motion from the previous pitch and to the next pitch.
  *
  * Returns one of:
+ *  - 'Ant?' Anticipation   – same pitch as the next (strong-beat) note
  *  - 'P?'   Passing Tone  – stepwise approach and departure in the same direction
  *  - 'N?'   Neighbor Note – stepwise approach and departure in opposite directions
  *  - 'ET?'  Escape Tone   – stepwise approach, skip departure
@@ -50,6 +51,11 @@ export function classifyFiguration(
 ): FigurationLabel | null {
   if (!prev || !next) {
     return null;
+  }
+
+  // Anticipation: arrives early on the pitch that the next strong-beat note will have
+  if (next.midi === current.midi && prev.midi !== current.midi) {
+    return 'Ant?';
   }
 
   const prevSize = getIntervalSize(prev, current);
@@ -75,5 +81,27 @@ export function classifyFiguration(
     return 'CS?';
   }
 
+  return null;
+}
+
+/**
+ * Classifies a non-sub-beat (quarter or longer) note as a potential suspension.
+ *
+ * A suspension holds the same pitch as the previous note into a new harmonic
+ * context and then resolves by step.
+ *
+ * Returns 'Sus?' when the pattern is detected, otherwise null.
+ */
+export function classifySuspension(
+  current: AbsoluteNote,
+  prev: AbsoluteNote | null,
+  next: AbsoluteNote | null,
+): FigurationLabel | null {
+  if (!prev || !next) {
+    return null;
+  }
+  if (prev.midi === current.midi && getIntervalSize(current, next) === 2) {
+    return 'Sus?';
+  }
   return null;
 }

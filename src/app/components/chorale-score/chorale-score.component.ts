@@ -45,7 +45,11 @@ const ACCIDENTAL_TO_VEX: Record<number, string> = {
 
 const MEASURES_PER_ROW = 4;
 const SYSTEM_WIDTH = 960;
-const SYSTEM_HEIGHT = 290;
+const SYSTEM_HEIGHT = 390;
+/** Vertical offset of the VexFlow system within the SVG (leaves room for soprano top-annotations). */
+const SYSTEM_Y_OFFSET = 40;
+/** Horizontal offset; leaves room for brace/singleLeft connectors that extend left of the system. */
+const SYSTEM_X_OFFSET = 20;
 
 function noteToVexKey(noteEvent: ParsedMeasureNote, clef: 'treble' | 'bass'): string {
   if (!noteEvent.note) {
@@ -60,6 +64,8 @@ function createStaveNote(
   n: ParsedMeasureNote,
   clef: 'treble' | 'bass',
   stemDirection: number,
+  figurationsJustify: AnnotationVerticalJustify = AnnotationVerticalJustify.TOP,
+  figurationsTextLine = 1,
 ): Note {
   const staveNote = vf.StaveNote({
     keys: [ noteToVexKey(n, clef) ],
@@ -69,8 +75,8 @@ function createStaveNote(
   });
   if (n.figuration) {
     const ann = vf.Annotation({ text: n.figuration });
-    ann.setVerticalJustification(AnnotationVerticalJustify.TOP);
-    ann.setTextLine(1);
+    ann.setVerticalJustification(figurationsJustify);
+    ann.setTextLine(figurationsTextLine);
     staveNote.addModifier(ann, 0);
   }
   return staveNote;
@@ -88,6 +94,8 @@ function createStaveNote(
   `,
   styles: [ `
     .chorale-score { overflow-x: auto; }
+    /* Allow VexFlow annotations that extend beyond the SVG bounds to remain visible */
+    .chorale-score svg { overflow: visible; }
   ` ],
 })
 export class ChoraleScoreComponent {
@@ -154,7 +162,7 @@ export class ChoraleScoreComponent {
       renderer: { elementId: containerId, width: SYSTEM_WIDTH, height: SYSTEM_HEIGHT },
     });
 
-    const system = vf.System({ x: 10, y: 10, width: SYSTEM_WIDTH - 20, autoWidth: false });
+    const system = vf.System({ x: SYSTEM_X_OFFSET, y: SYSTEM_Y_OFFSET, width: SYSTEM_WIDTH - SYSTEM_X_OFFSET * 2, autoWidth: false });
 
     const soprano: Note[] = [];
     const alto: Note[] = [];
@@ -180,7 +188,7 @@ export class ChoraleScoreComponent {
       });
 
       altoNotes.forEach((n) => {
-        alto.push(createStaveNote(vf, n, 'treble', -1));
+        alto.push(createStaveNote(vf, n, 'treble', -1, AnnotationVerticalJustify.BOTTOM));
       });
 
       tenorNotes.forEach((n) => {
@@ -188,9 +196,10 @@ export class ChoraleScoreComponent {
       });
 
       bassNotes.forEach((n, noteIdx) => {
-        const bassNote = createStaveNote(vf, n, 'bass', -1);
-
         const figures = fb[noteIdx] ?? [];
+        // Figuration label goes below figured-bass annotations; offset by their count
+        const bassNote = createStaveNote(vf, n, 'bass', -1, AnnotationVerticalJustify.BOTTOM, figures.length + 1);
+
         figures.forEach((fig, figIdx) => {
           const ann = vf.Annotation({ text: fig, vJustify: 'bottom' });
           ann.setVerticalJustification(AnnotationVerticalJustify.BOTTOM);

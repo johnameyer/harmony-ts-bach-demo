@@ -1,6 +1,6 @@
 import { Injectable } from '@angular/core';
 import { AbsoluteNote, Accidental } from 'harmony-ts';
-import { classifyFiguration, isSubBeat } from './figuration-detector';
+import { classifyFiguration, classifySuspension, isSubBeat } from './figuration-detector';
 
 export interface ParsedMeasureNote {
   note: AbsoluteNote | null;
@@ -217,7 +217,7 @@ export class MusicXmlParserService {
 
       for (let i = 0; i < allNotes.length; i++) {
         const current = allNotes[i];
-        if (!current.note || !isSubBeat(current.vexDuration)) {
+        if (!current.note) {
           continue;
         }
 
@@ -237,7 +237,11 @@ export class MusicXmlParserService {
           }
         }
 
-        current.figuration = classifyFiguration(current.note, prev, next);
+        if (isSubBeat(current.vexDuration)) {
+          current.figuration = classifyFiguration(current.note, prev, next);
+        } else {
+          current.figuration = classifySuspension(current.note, prev, next);
+        }
       }
     }
   }
