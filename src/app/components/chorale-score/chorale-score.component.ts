@@ -35,24 +35,6 @@ function vexDurationToBeats(vexDuration: string): number {
   return beats;
 }
 
-const FIFTHS_TO_KEY: Record<number, string> = {
-  [-7]: 'Cb',
-  [-6]: 'Gb',
-  [-5]: 'Db',
-  [-4]: 'Ab',
-  [-3]: 'Eb',
-  [-2]: 'Bb',
-  [-1]: 'F',
-  0: 'C',
-  1: 'G',
-  2: 'D',
-  3: 'A',
-  4: 'E',
-  5: 'B',
-  6: 'F#',
-  7: 'C#',
-};
-
 const ACCIDENTAL_TO_VEX: Record<number, string> = {
   [-2]: 'bb',
   [-1]: 'b',
@@ -61,9 +43,17 @@ const ACCIDENTAL_TO_VEX: Record<number, string> = {
   2: '##',
 };
 
+const FIFTHS_TO_KEY: Record<number, string> = {
+  [-7]: 'Cb', [-6]: 'Gb', [-5]: 'Db', [-4]: 'Ab', [-3]: 'Eb',
+  [-2]: 'Bb', [-1]: 'F', 0: 'C', 1: 'G', 2: 'D', 3: 'A', 4: 'E',
+  5: 'B', 6: 'F#', 7: 'C#',
+};
+
 const MEASURES_PER_ROW = 4;
-const SYSTEM_WIDTH = 960;
-const SYSTEM_HEIGHT = 390;
+/** Fallback system width when container width is unavailable. */
+const DEFAULT_SYSTEM_WIDTH = 1200;
+/** Height of a rendered row SVG; includes space below bass staff for roman numeral labels. */
+const SYSTEM_HEIGHT = 430;
 /** Vertical offset of the VexFlow system within the SVG (leaves room for soprano top-annotations). */
 const SYSTEM_Y_OFFSET = 40;
 /** Horizontal offset; leaves room for brace/singleLeft connectors that extend left of the system. */
@@ -85,7 +75,6 @@ function createStaveNote(
   clef: 'treble' | 'bass',
   stemDirection: number,
   figurationsJustify: AnnotationVerticalJustify = AnnotationVerticalJustify.TOP,
-  figurationsTextLine = 1,
 ): Note {
   const staveNote = vf.StaveNote({
     keys: [ noteToVexKey(n, clef) ],
@@ -96,7 +85,7 @@ function createStaveNote(
   if (n.figuration) {
     const ann = vf.Annotation({ text: n.figuration });
     ann.setVerticalJustification(figurationsJustify);
-    ann.setTextLine(figurationsTextLine);
+    ann.setTextLine(1);
     staveNote.addModifier(ann, 0);
   }
   return staveNote;
@@ -201,12 +190,16 @@ export class ChoraleScoreComponent {
 
       rowEl.innerHTML = '';
 
+      // Use the container's current rendered width for responsive layout.
+      const containerWidth =
+        rowEl.parentElement?.clientWidth || DEFAULT_SYSTEM_WIDTH;
+
       const startMeasure = rowIdx * MEASURES_PER_ROW;
       const endMeasure = Math.min(startMeasure + MEASURES_PER_ROW, chorale.measures.length);
       const rowMeasures = chorale.measures.slice(startMeasure, endMeasure);
 
       try {
-        this.renderRow(rowEl, rowId, rowMeasures, keyName, timeSig, rowIdx === 0, rowStartBeat);
+        this.renderRow(rowEl, rowId, rowMeasures, keyName, timeSig, rowIdx === 0, rowStartBeat, containerWidth);
       } catch {
         // Skip rows that fail to render (e.g. no DOM context in SSR)
       }
@@ -228,13 +221,14 @@ export class ChoraleScoreComponent {
     timeSig: string,
     isFirstRow: boolean,
     rowStartBeat: number,
+    systemWidth: number,
   ): void {
     container.id = containerId;
     const vf = new Factory({
-      renderer: { elementId: containerId, width: SYSTEM_WIDTH, height: SYSTEM_HEIGHT },
+      renderer: { elementId: containerId, width: systemWidth, height: SYSTEM_HEIGHT },
     });
 
-    const system = vf.System({ x: SYSTEM_X_OFFSET, y: SYSTEM_Y_OFFSET, width: SYSTEM_WIDTH - SYSTEM_X_OFFSET * 2, autoWidth: false });
+    const system = vf.System({ x: SYSTEM_X_OFFSET, y: SYSTEM_Y_OFFSET, width: systemWidth - SYSTEM_X_OFFSET * 2, autoWidth: false });
 
     const soprano: Note[] = [];
     const alto: Note[] = [];
@@ -292,7 +286,6 @@ export class ChoraleScoreComponent {
       const altoNotes = measure.partNotes[1] ?? [];
       const tenorNotes = measure.partNotes[2] ?? [];
       const bassNotes = measure.partNotes[3] ?? [];
-      const fb = measure.figuredBass;
       const rns = measure.romanNumerals;
 
       sopranoNotes.forEach((n) => {
@@ -314,16 +307,7 @@ export class ChoraleScoreComponent {
       });
 
       bassNotes.forEach((n, noteIdx) => {
-        const figures = fb[noteIdx] ?? [];
-        // Figuration label goes below figured-bass annotations; offset by their count
-        const bassNote = createStaveNote(vf, n, 'bass', -1, AnnotationVerticalJustify.BOTTOM, figures.length + 1);
-
-        figures.forEach((fig, figIdx) => {
-          const ann = vf.Annotation({ text: fig, vJustify: 'bottom' });
-          ann.setVerticalJustification(AnnotationVerticalJustify.BOTTOM);
-          ann.setTextLine(figIdx + 1);
-          bassNote.addModifier(ann, 0);
-        });
+        const bassNote = createStaveNote(vf, n, 'bass', -1, AnnotationVerticalJustify.BOTTOM);
 
         bass.push(bassNote);
         partBeat[3] = registerBeat(bassNote, n, partBeat[3]);
