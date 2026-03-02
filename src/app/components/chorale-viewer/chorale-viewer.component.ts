@@ -1,6 +1,7 @@
-import { ChangeDetectionStrategy, Component, computed, input, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, effect, inject, input, signal, untracked } from '@angular/core';
 import { ParsedChorale } from '../../services/music-xml-parser.service';
 import { ChoraleScoreComponent } from '../chorale-score/chorale-score.component';
+import { PlayerService } from '../../services/player.service';
 
 const PAGE_SIZE = 16;
 
@@ -11,14 +12,51 @@ const PAGE_SIZE = 16;
   template: `
     <div class="card mt-3">
       <div class="card-header">
-        <h2 class="h5 mb-0">{{ chorale().title }}</h2>
-        <small class="text-muted">
-          {{ chorale().beats.length }} quarter-note beats
-          &middot; {{ chorale().partNames.length }} parts
-        </small>
+        <div class="d-flex flex-wrap align-items-start gap-2">
+          <div class="flex-grow-1">
+            <h2 class="h5 mb-0">{{ chorale().title }}</h2>
+            <small class="text-muted">
+              {{ chorale().beats.length }} quarter-note beats
+              &middot; {{ chorale().partNames.length }} parts
+            </small>
+          </div>
+          <div class="d-flex align-items-center gap-2 flex-shrink-0">
+            @if (!isPlaying()) {
+              <button
+                class="btn btn-sm btn-success"
+                (click)="play()"
+                aria-label="Play chorale"
+              >
+                ▶ Play
+              </button>
+            } @else {
+              <button
+                class="btn btn-sm btn-secondary"
+                (click)="stop()"
+                aria-label="Stop playback"
+              >
+                ■ Stop
+              </button>
+            }
+            <label class="text-muted small mb-0" [for]="tempoInputId">♩ = {{ tempo() }}</label>
+            <input
+              type="range"
+              class="form-range"
+              style="width: 100px"
+              [id]="tempoInputId"
+              [disabled]="isPlaying()"
+              min="40"
+              max="200"
+              step="1"
+              [value]="tempo()"
+              (input)="onTempoChange($event)"
+              aria-label="Tempo in beats per minute"
+            />
+          </div>
+        </div>
       </div>
       <div class="card-body p-2">
-        <app-chorale-score [chorale]="chorale()" />
+        <app-chorale-score [chorale]="chorale()" [currentBeat]="currentBeat()" />
       </div>
       <div class="card-footer">
         <details>
@@ -35,7 +73,7 @@ const PAGE_SIZE = 16;
               </thead>
               <tbody class="font-monospace">
                 @for (beat of visibleBeats(); track $index) {
-                  <tr>
+                  <tr [class.table-primary]="currentBeat() === $index">
                     <th scope="row" class="text-center text-muted">{{ $index + 1 }}</th>
                     @for (partNotes of beat; track $index) {
                       <td>
@@ -71,6 +109,17 @@ const PAGE_SIZE = 16;
 export class ChoraleViewerComponent {
   readonly chorale = input.required<ParsedChorale>();
 
+  private readonly player = inject(PlayerService);
+
+  /** Unique id for the tempo range input (for accessibility label binding). */
+  protected readonly tempoInputId = `tempo-${crypto.randomUUID()}`;
+
+  protected readonly isPlaying = signal(false);
+
+  protected readonly currentBeat = signal<number | null>(null);
+
+  protected readonly tempo = signal(100);
+
   protected readonly displayBeats = signal(PAGE_SIZE);
 
   protected readonly visibleBeats = computed(
@@ -80,6 +129,45 @@ export class ChoraleViewerComponent {
   protected readonly hasMore = computed(
     () => this.chorale().beats.length > this.displayBeats(),
   );
+
+  constructor() {
+    // Stop playback and reset beat when the chorale changes
+    effect(() => {
+      this.chorale();
+      untracked(() => {
+        if (this.isPlaying()) {
+          this.stop();
+        }
+      });
+    });
+  }
+
+  protected play(): void {
+    const chorale = this.chorale();
+    this.isPlaying.set(true);
+    this.player.play(
+      chorale.beats,
+      this.tempo(),
+      (beat) => this.currentBeat.set(beat),
+      () => {
+        this.isPlaying.set(false);
+        this.currentBeat.set(null);
+      },
+    );
+  }
+
+  protected stop(): void {
+    this.player.stop();
+    this.isPlaying.set(false);
+    this.currentBeat.set(null);
+  }
+
+  protected onTempoChange(event: Event): void {
+    const value = (event.target as HTMLInputElement).valueAsNumber;
+    if (Number.isFinite(value)) {
+      this.tempo.set(value);
+    }
+  }
 
   protected showMore(): void {
     this.displayBeats.update((n) => n + PAGE_SIZE);

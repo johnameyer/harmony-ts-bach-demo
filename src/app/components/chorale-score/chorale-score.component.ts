@@ -17,6 +17,23 @@ import {
 } from 'vexflow';
 import { ParsedChorale, ParsedMeasure, ParsedMeasureNote } from '../../services/music-xml-parser.service';
 
+/** Map a VexFlow duration string (e.g. "q", "hd", "8") to quarter-note beats. */
+function vexDurationToBeats(vexDuration: string): number {
+  const dotless = vexDuration.replace(/d+$/, '');
+  const dots = (vexDuration.match(/d+$/) ?? [ '' ])[0].length;
+  const BASE_BEATS: Record<string, number> = {
+    w: 4, h: 2, q: 1, 8: 0.5, 16: 0.25, 32: 0.125, 64: 0.0625,
+  };
+  const baseBeats = BASE_BEATS[dotless] ?? 1;
+  let beats = baseBeats;
+  let extra = baseBeats / 2;
+  for (let i = 0; i < dots; i++) {
+    beats += extra;
+    extra /= 2;
+  }
+  return beats;
+}
+
 const FIFTHS_TO_KEY: Record<number, string> = {
   [-7]: 'Cb',
   [-6]: 'Gb',
@@ -101,11 +118,20 @@ function createStaveNote(
 export class ChoraleScoreComponent {
   readonly chorale = input.required<ParsedChorale>();
 
+  /** Beat index (0-based quarter-note beats) to highlight, or null for none. */
+  readonly currentBeat = input<number | null>(null);
+
   private readonly hostEl = inject(ElementRef);
 
   private renderedChorale: ParsedChorale | null = null;
 
   private readonly instanceId = `cs-${crypto.randomUUID()}`;
+
+  /** Map from quarter-note beat index to the VexFlow Note objects active at that beat. */
+  private beatNoteMap = new Map<number, Note[]>();
+
+  /** The beat whose notes are currently highlighted (to allow un-highlighting). */
+  private previousHighlightedBeat: number | null = null;
 
   protected readonly rowIds = computed(() => {
     const c = this.chorale();
@@ -118,9 +144,42 @@ export class ChoraleScoreComponent {
       const current = this.chorale();
       if (current !== this.renderedChorale) {
         this.renderedChorale = current;
+        this.beatNoteMap = new Map();
+        this.previousHighlightedBeat = null;
         this.renderScore(current);
       }
+
+      // Update note highlighting whenever currentBeat changes
+      const beat = this.currentBeat();
+      if (this.previousHighlightedBeat !== beat) {
+        if (this.previousHighlightedBeat !== null) {
+          this.toggleBeatHighlight(this.previousHighlightedBeat, false);
+        }
+        if (beat !== null) {
+          this.toggleBeatHighlight(beat, true);
+        }
+        this.previousHighlightedBeat = beat;
+      }
     });
+  }
+
+  /**
+   * Add or remove the `vf-beat-highlight` CSS class on the SVG `<g>` element
+   * VexFlow created for each note at the given beat.
+   *
+   * VexFlow stores fill/stroke as SVG presentation attributes, which CSS class
+   * rules override — so a single classList operation per note is enough, with
+   * no need to query every child path/line/rect individually.
+   */
+  private toggleBeatHighlight(beat: number, highlighted: boolean): void {
+    const notes = this.beatNoteMap.get(beat) ?? [];
+    for (const note of notes) {
+      const svgEl = note.getSVGElement();
+      if (!svgEl) {
+        continue;
+      }
+      svgEl.classList.toggle('vf-beat-highlight', highlighted);
+    }
   }
 
   private renderScore(chorale: ParsedChorale): void {
@@ -128,11 +187,13 @@ export class ChoraleScoreComponent {
     const timeSig = `${chorale.timeBeats}/${chorale.timeBeatType}`;
     const rowCount = Math.ceil((chorale.measures.length || 1) / MEASURES_PER_ROW);
 
+    let rowStartBeat = 0;
+
     for (let rowIdx = 0; rowIdx < rowCount; rowIdx++) {
       const rowId = `${this.instanceId}-${rowIdx}`;
       const rowEl = (this.hostEl.nativeElement as HTMLElement).querySelector(`#${rowId}`) as HTMLElement | null;
       if (!rowEl) {
-        continue; 
+        continue;
       }
 
       rowEl.innerHTML = '';
@@ -142,9 +203,16 @@ export class ChoraleScoreComponent {
       const rowMeasures = chorale.measures.slice(startMeasure, endMeasure);
 
       try {
-        this.renderRow(rowEl, rowId, rowMeasures, keyName, timeSig, rowIdx === 0);
+        this.renderRow(rowEl, rowId, rowMeasures, keyName, timeSig, rowIdx === 0, rowStartBeat);
       } catch {
         // Skip rows that fail to render (e.g. no DOM context in SSR)
+      }
+
+      // Advance beat position by the total duration of all measures in this row
+      for (const measure of rowMeasures) {
+        for (const n of (measure.partNotes[0] ?? [])) {
+          rowStartBeat += vexDurationToBeats(n.vexDuration);
+        }
       }
     }
   }
@@ -156,6 +224,7 @@ export class ChoraleScoreComponent {
     keyName: string,
     timeSig: string,
     isFirstRow: boolean,
+    rowStartBeat: number,
   ): void {
     container.id = containerId;
     const vf = new Factory({
@@ -169,6 +238,36 @@ export class ChoraleScoreComponent {
     const tenor: Note[] = [];
     const bass: Note[] = [];
 
+    // Beat offsets per part within the row (initialised per measure below)
+    const partBeat = [ 0, 0, 0, 0 ];
+
+    /** Add a VexFlow note to beatNoteMap for every beat it is active at. */
+    const registerBeat = (note: Note, partNote: ParsedMeasureNote, beatStart: number): number => {
+      const d = vexDurationToBeats(partNote.vexDuration);
+      if (partNote.note) {
+        // Use same slot logic as ParsedChorale.beats: floor..ceil-1
+        const firstSlot = Math.floor(beatStart);
+        const lastSlot = Math.ceil(beatStart + d) - 1;
+        for (let b = firstSlot; b <= lastSlot; b++) {
+          if (!this.beatNoteMap.has(b)) {
+            this.beatNoteMap.set(b, []);
+          }
+          this.beatNoteMap.get(b)!.push(note);
+        }
+      }
+      return beatStart + d;
+    };
+
+    // Compute start beats for each measure within this row (based on soprano part)
+    const measureStartBeats: number[] = [];
+    let acc = rowStartBeat;
+    for (const measure of measures) {
+      measureStartBeats.push(acc);
+      for (const n of (measure.partNotes[0] ?? [])) {
+        acc += vexDurationToBeats(n.vexDuration);
+      }
+    }
+
     measures.forEach((measure, mIdx) => {
       if (mIdx > 0) {
         soprano.push(vf.BarNote());
@@ -177,6 +276,12 @@ export class ChoraleScoreComponent {
         bass.push(vf.BarNote());
       }
 
+      const mStart = measureStartBeats[mIdx];
+      partBeat[0] = mStart;
+      partBeat[1] = mStart;
+      partBeat[2] = mStart;
+      partBeat[3] = mStart;
+
       const sopranoNotes = measure.partNotes[0] ?? [];
       const altoNotes = measure.partNotes[1] ?? [];
       const tenorNotes = measure.partNotes[2] ?? [];
@@ -184,15 +289,21 @@ export class ChoraleScoreComponent {
       const fb = measure.figuredBass;
 
       sopranoNotes.forEach((n) => {
-        soprano.push(createStaveNote(vf, n, 'treble', 1));
+        const vexNote = createStaveNote(vf, n, 'treble', 1);
+        soprano.push(vexNote);
+        partBeat[0] = registerBeat(vexNote, n, partBeat[0]);
       });
 
       altoNotes.forEach((n) => {
-        alto.push(createStaveNote(vf, n, 'treble', -1, AnnotationVerticalJustify.BOTTOM));
+        const vexNote = createStaveNote(vf, n, 'treble', -1, AnnotationVerticalJustify.BOTTOM);
+        alto.push(vexNote);
+        partBeat[1] = registerBeat(vexNote, n, partBeat[1]);
       });
 
       tenorNotes.forEach((n) => {
-        tenor.push(createStaveNote(vf, n, 'bass', 1));
+        const vexNote = createStaveNote(vf, n, 'bass', 1);
+        tenor.push(vexNote);
+        partBeat[2] = registerBeat(vexNote, n, partBeat[2]);
       });
 
       bassNotes.forEach((n, noteIdx) => {
@@ -208,6 +319,7 @@ export class ChoraleScoreComponent {
         });
 
         bass.push(bassNote);
+        partBeat[3] = registerBeat(bassNote, n, partBeat[3]);
       });
     });
 
