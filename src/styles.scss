@@ -1,1 +1,17 @@
 /* You can add global styles to this file, and also import other style files */
+
+/*
+ * Beat-highlight class toggled on VexFlow note <g> elements during playback.
+ * Must live here (not in a component's styles) because VexFlow's generated SVG
+ * elements don't carry Angular's _ngcontent-* scoping attributes, so component-
+ * scoped CSS rules cannot reach them.
+ */
+.vf-beat-highlight path,
+.vf-beat-highlight line,
+.vf-beat-highlight polygon,
+.vf-beat-highlight circle,
+.vf-beat-highlight rect,
+.vf-beat-highlight text {
+  fill: #2196f3;
+  stroke: #2196f3;
+}

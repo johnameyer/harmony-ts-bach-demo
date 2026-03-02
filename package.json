@@ -25,6 +25,7 @@
     "bootstrap": "^5.3.8",
     "harmony-ts": "^0.14.6",
     "rxjs": "~7.8.0",
+    "tone": "15.1.22",
     "tslib": "^2.3.0",
     "vexflow": "5"
   },
