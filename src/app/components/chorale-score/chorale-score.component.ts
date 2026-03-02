@@ -55,6 +55,27 @@ function noteToVexKey(noteEvent: ParsedMeasureNote, clef: 'treble' | 'bass'): st
   return `${noteEvent.note.letterName.toLowerCase()}${acc}/${noteEvent.note.octavePosition}`;
 }
 
+function createStaveNote(
+  vf: Factory,
+  n: ParsedMeasureNote,
+  clef: 'treble' | 'bass',
+  stemDirection: number,
+): Note {
+  const staveNote = vf.StaveNote({
+    keys: [ noteToVexKey(n, clef) ],
+    duration: n.note ? n.vexDuration : `${n.vexDuration}r`,
+    stemDirection,
+    clef,
+  });
+  if (n.figuration) {
+    const ann = vf.Annotation({ text: n.figuration });
+    ann.setVerticalJustification(AnnotationVerticalJustify.TOP);
+    ann.setTextLine(1);
+    staveNote.addModifier(ann, 0);
+  }
+  return staveNote;
+}
+
 @Component({
   selector: 'app-chorale-score',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -155,39 +176,19 @@ export class ChoraleScoreComponent {
       const fb = measure.figuredBass;
 
       sopranoNotes.forEach((n) => {
-        soprano.push(vf.StaveNote({
-          keys: [ noteToVexKey(n, 'treble') ],
-          duration: n.note ? n.vexDuration : `${n.vexDuration}r`,
-          stemDirection: 1,
-          clef: 'treble',
-        }));
+        soprano.push(createStaveNote(vf, n, 'treble', 1));
       });
 
       altoNotes.forEach((n) => {
-        alto.push(vf.StaveNote({
-          keys: [ noteToVexKey(n, 'treble') ],
-          duration: n.note ? n.vexDuration : `${n.vexDuration}r`,
-          stemDirection: -1,
-          clef: 'treble',
-        }));
+        alto.push(createStaveNote(vf, n, 'treble', -1));
       });
 
       tenorNotes.forEach((n) => {
-        tenor.push(vf.StaveNote({
-          keys: [ noteToVexKey(n, 'bass') ],
-          duration: n.note ? n.vexDuration : `${n.vexDuration}r`,
-          stemDirection: 1,
-          clef: 'bass',
-        }));
+        tenor.push(createStaveNote(vf, n, 'bass', 1));
       });
 
       bassNotes.forEach((n, noteIdx) => {
-        const bassNote = vf.StaveNote({
-          keys: [ noteToVexKey(n, 'bass') ],
-          duration: n.note ? n.vexDuration : `${n.vexDuration}r`,
-          stemDirection: -1,
-          clef: 'bass',
-        });
+        const bassNote = createStaveNote(vf, n, 'bass', -1);
 
         const figures = fb[noteIdx] ?? [];
         figures.forEach((fig, figIdx) => {

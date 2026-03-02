@@ -1,9 +1,11 @@
 import { Injectable } from '@angular/core';
 import { AbsoluteNote, Accidental } from 'harmony-ts';
+import { classifyFiguration, isSubBeat } from './figuration-detector';
 
 export interface ParsedMeasureNote {
   note: AbsoluteNote | null;
   vexDuration: string;
+  figuration?: string | null;
 }
 
 export interface ParsedMeasure {
@@ -105,6 +107,7 @@ export class MusicXmlParserService {
     const fbPartIndex = this.findFiguredBassPartIndex(partElements);
     const fbPart = fbPartIndex !== -1 ? partElements[fbPartIndex] : null;
     const measures = this.extractMeasures(voiceParts, fbPart);
+    this.detectFigurations(measures);
 
     return { title, partNames, beats, keyFifths, timeBeats, timeBeatType, measures };
   }
@@ -200,6 +203,43 @@ export class MusicXmlParserService {
 
       return measureFB;
     });
+  }
+
+  private detectFigurations(measures: ParsedMeasure[]): void {
+    const partCount = measures.reduce((max, m) => Math.max(max, m.partNotes.length), 0);
+
+    for (let partIdx = 0; partIdx < partCount; partIdx++) {
+      // Flatten all notes for this part across all measures into a single array.
+      const allNotes: ParsedMeasureNote[] = [];
+      for (const measure of measures) {
+        allNotes.push(...(measure.partNotes[partIdx] ?? []));
+      }
+
+      for (let i = 0; i < allNotes.length; i++) {
+        const current = allNotes[i];
+        if (!current.note || !isSubBeat(current.vexDuration)) {
+          continue;
+        }
+
+        let prev: AbsoluteNote | null = null;
+        for (let j = i - 1; j >= 0; j--) {
+          if (allNotes[j].note) {
+            prev = allNotes[j].note;
+            break;
+          }
+        }
+
+        let next: AbsoluteNote | null = null;
+        for (let j = i + 1; j < allNotes.length; j++) {
+          if (allNotes[j].note) {
+            next = allNotes[j].note;
+            break;
+          }
+        }
+
+        current.figuration = classifyFiguration(current.note, prev, next);
+      }
+    }
   }
 
   private extractNoteEvents(part: Element): NoteEvent[] {
