@@ -200,12 +200,21 @@ export class HarmonyAnalysisService {
 
       if (bestChords !== null) {
         for (let i = 0; i < bestLen; i++) {
-          const beatKey = slices[position + i]?.beatKey;
+          const slice = slices[position + i];
+          const beatKey = slice?.beatKey;
           if (beatKey !== undefined) {
             const rn = bestChords[i]?.romanNumeral;
             if (rn) {
               romanByBeat.set(beatKey, toRomanNumeralAnalysis(rn));
-              chordByBeat.set(beatKey, rn);
+              // Only record the chord for figuration confirmation when the slice
+              // has at least one non-figurated note (filteredConstraint not all-undefined).
+              // This prevents clearing tentative labels at purely-figurated positions.
+              const hasNonFig = (slice.filteredConstraint.voices ?? []).some(
+                (v) => v !== undefined,
+              );
+              if (hasNonFig) {
+                chordByBeat.set(beatKey, rn);
+              }
             }
           }
         }
@@ -224,13 +233,11 @@ export class HarmonyAnalysisService {
   }
 
   /**
-   * Returns true if every chord in the sequence has its actual bass note
-   * (notes[inversion]) matching the constraint's bass voice (voices[3]).
-   * Positions where the constraint has no bass voice are always accepted.
-   *
-   * This filter selects the correct inversion from the harmonizer's output
-   * without re-labelling: for example, iv6 (G in bass) is accepted over iv
-   * root position (E in bass) when the constraint bass is G.
+   * Returns true if every chord in the sequence satisfies two conditions:
+   *  1. All defined constraint voices appear in the chord's note set.
+   *  2. The chord's actual bass note (notes[inversion]) matches the constraint's
+   *     bass voice (voices[3]), so the correct inversion is required without
+   *     re-labelling (e.g. iv6 with G in bass is preferred over iv root with E).
    */
   private passesBassFilter(
     chords: { romanNumeral: RomanNumeral }[],
@@ -241,13 +248,23 @@ export class HarmonyAnalysisService {
       if (!rn) {
         continue;
       }
-      const bassConstraint = constraints[i]?.voices?.[3];
-      if (!bassConstraint) {
-        continue;
+      const voices = constraints[i]?.voices ?? [];
+      const rnNoteNames = new Set(rn.notes.map((n) => n.simpleName));
+
+      // All defined constraint voices must appear in the chord's note set.
+      for (const v of voices) {
+        if (v !== null && v !== undefined && !rnNoteNames.has(v.simpleName)) {
+          return false;
+        }
       }
-      const chordBassNote = rn.notes[rn.inversion];
-      if (chordBassNote && chordBassNote.simpleName !== bassConstraint.simpleName) {
-        return false;
+
+      // Bass voice must match the chord's actual bass note position.
+      const bassConstraint = voices[3];
+      if (bassConstraint) {
+        const chordBassNote = rn.notes[rn.inversion];
+        if (chordBassNote && chordBassNote.simpleName !== bassConstraint.simpleName) {
+          return false;
+        }
       }
     }
     return true;
