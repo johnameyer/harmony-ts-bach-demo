@@ -68,6 +68,8 @@ const SYSTEM_HEIGHT = 390;
 const SYSTEM_Y_OFFSET = 40;
 /** Horizontal offset; leaves room for brace/singleLeft connectors that extend left of the system. */
 const SYSTEM_X_OFFSET = 20;
+/** VexFlow staff line at which roman-numeral TextNotes are rendered (below the bass staff). */
+const ROMAN_NUMERAL_LINE = 12;
 
 function noteToVexKey(noteEvent: ParsedMeasureNote, clef: 'treble' | 'bass'): string {
   if (!noteEvent.note) {
@@ -354,7 +356,7 @@ export class ChoraleScoreComponent {
     // Configure TextNote appearance: place below the bass staff, centred under each note.
     for (const tickable of rnVoice.getTickables()) {
       if (tickable instanceof TextNote) {
-        tickable.setLine(12);
+        tickable.setLine(ROMAN_NUMERAL_LINE);
         tickable.setJustification(TextNote.Justification.CENTER);
       }
     }

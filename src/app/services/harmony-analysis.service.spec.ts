@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { TestBed } from '@angular/core/testing';
+import { AbsoluteNote } from 'harmony-ts';
 import { HarmonyAnalysisService } from './harmony-analysis.service';
 import { MusicXmlParserService, ParsedChorale } from './music-xml-parser.service';
 
@@ -170,7 +171,6 @@ describe('HarmonyAnalysisService', () => {
 
       // Patch soprano to a note that, combined with the others, does not form any known chord.
       // Using C#5 (chromatic note not in any diatonic chord in C major) alongside C3 bass.
-      const { AbsoluteNote } = require('harmony-ts');
       chorale.measures[0].partNotes[0][0] = { note: new AbsoluteNote('C', 1, 5), vexDuration: 'q' };
       chorale.measures[0].partNotes[1][0] = { note: new AbsoluteNote('F', 1, 4), vexDuration: 'q' };
       chorale.measures[0].partNotes[2][0] = { note: new AbsoluteNote('A', 1, 4), vexDuration: 'q' };
