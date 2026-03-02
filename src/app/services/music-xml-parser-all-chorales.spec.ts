@@ -1,6 +1,7 @@
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
+import { TestBed } from '@angular/core/testing';
 import { CHORALE_FILES } from '../data/chorales-list.generated';
 import { MusicXmlParserService } from './music-xml-parser.service';
 
@@ -10,7 +11,12 @@ const CHORALES_DIR = join(
 );
 
 describe('MusicXmlParserService – all chorales', () => {
-  const service = new MusicXmlParserService();
+  let service: MusicXmlParserService;
+
+  beforeAll(() => {
+    TestBed.configureTestingModule({});
+    service = TestBed.inject(MusicXmlParserService);
+  });
 
   it('should have a non-empty chorales list', () => {
     expect(CHORALE_FILES.length).toBeGreaterThan(0);

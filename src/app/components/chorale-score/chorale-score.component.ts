@@ -12,6 +12,7 @@ import {
   AnnotationVerticalJustify,
   Factory,
   Note,
+  TextNote,
   Voice,
   VoiceMode,
 } from 'vexflow';
@@ -237,6 +238,8 @@ export class ChoraleScoreComponent {
     const alto: Note[] = [];
     const tenor: Note[] = [];
     const bass: Note[] = [];
+    /** TextNote / GhostNote per bass note – rendered as a separate voice below the bass staff. */
+    const rnNotes: Note[] = [];
 
     // Beat offsets per part within the row (initialised per measure below)
     const partBeat = [ 0, 0, 0, 0 ];
@@ -274,6 +277,7 @@ export class ChoraleScoreComponent {
         alto.push(vf.BarNote());
         tenor.push(vf.BarNote());
         bass.push(vf.BarNote());
+        rnNotes.push(vf.BarNote());
       }
 
       const mStart = measureStartBeats[mIdx];
@@ -287,6 +291,7 @@ export class ChoraleScoreComponent {
       const tenorNotes = measure.partNotes[2] ?? [];
       const bassNotes = measure.partNotes[3] ?? [];
       const fb = measure.figuredBass;
+      const rns = measure.romanNumerals;
 
       sopranoNotes.forEach((n) => {
         const vexNote = createStaveNote(vf, n, 'treble', 1);
@@ -320,6 +325,20 @@ export class ChoraleScoreComponent {
 
         bass.push(bassNote);
         partBeat[3] = registerBeat(bassNote, n, partBeat[3]);
+
+        // Roman-numeral label (TextNote voice below the bass staff)
+        const rn = rns?.[noteIdx] ?? null;
+        if (rn) {
+          const tn = vf.TextNote({
+            text: rn.base,
+            duration: n.vexDuration,
+            ...(rn.superscript ? { superscript: rn.superscript } : {}),
+            ...(rn.subscript ? { subscript: rn.subscript } : {}),
+          });
+          rnNotes.push(tn);
+        } else {
+          rnNotes.push(vf.GhostNote({ duration: n.vexDuration }));
+        }
       });
     });
 
@@ -330,6 +349,15 @@ export class ChoraleScoreComponent {
     const altoVoice = makeVoice(alto);
     const tenorVoice = makeVoice(tenor);
     const bassVoice = makeVoice(bass);
+    const rnVoice = makeVoice(rnNotes);
+
+    // Configure TextNote appearance: place below the bass staff, centred under each note.
+    for (const tickable of rnVoice.getTickables()) {
+      if (tickable instanceof TextNote) {
+        tickable.setLine(12);
+        tickable.setJustification(TextNote.Justification.CENTER);
+      }
+    }
 
     Accidental.applyAccidentals([ sopranoVoice, altoVoice ], keyName);
     Accidental.applyAccidentals([ tenorVoice, bassVoice ], keyName);
@@ -340,7 +368,7 @@ export class ChoraleScoreComponent {
       trebleStave.addTimeSignature(timeSig);
     }
 
-    const bassStave = system.addStave({ voices: [ tenorVoice, bassVoice ] });
+    const bassStave = system.addStave({ voices: [ tenorVoice, bassVoice, rnVoice ] });
     bassStave.addClef('bass').addKeySignature(keyName);
     if (isFirstRow) {
       bassStave.addTimeSignature(timeSig);

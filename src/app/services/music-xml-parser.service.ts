@@ -1,6 +1,7 @@
-import { Injectable } from '@angular/core';
+import { Injectable, inject } from '@angular/core';
 import { AbsoluteNote, Accidental } from 'harmony-ts';
 import { classifyFiguration, classifySuspension, isSubBeat } from './figuration-detector';
+import { HarmonyAnalysisService } from './harmony-analysis.service';
 
 export interface ParsedMeasureNote {
   note: AbsoluteNote | null;
@@ -8,11 +9,29 @@ export interface ParsedMeasureNote {
   figuration?: string | null;
 }
 
+/**
+ * Structured display info for a roman-numeral analysis result at one beat.
+ * Mirrors the display format used in harmony-ts-demo (base text + superscript + subscript).
+ */
+export interface RomanNumeralAnalysis {
+  /** Base roman numeral without quality/inversion suffix (e.g. "I", "V", "ii", "?"). */
+  base: string;
+  /** Figures shown to the upper-right: quality symbol + top inversion figure (e.g. "7", "○6", "ø7"). */
+  superscript: string;
+  /** Bottom inversion figure shown below superscript (e.g. "5", "4"). */
+  subscript: string;
+}
+
 export interface ParsedMeasure {
   /** Note events per part (indices 0–3 = Soprano/Alto/Tenor/Bass). */
   partNotes: ParsedMeasureNote[][];
   /** Figured-bass figures per note, aligned with partNotes[3] (Bass). */
   figuredBass: string[][];
+  /**
+   * Roman-numeral analysis results per bass note (aligned with partNotes[3]).
+   * null at a given index means no label for that note (e.g. sub-beat or continuing chord).
+   */
+  romanNumerals: (RomanNumeralAnalysis | null)[];
 }
 
 export interface ParsedChorale {
@@ -21,6 +40,8 @@ export interface ParsedChorale {
   beats: AbsoluteNote[][][];
   /** MusicXML key-signature fifths value (−7…+7). */
   keyFifths: number;
+  /** True when the MusicXML key signature specifies a minor mode. */
+  isMinor: boolean;
   /** Numerator of the time signature. */
   timeBeats: number;
   /** Denominator of the time signature. */
@@ -47,6 +68,8 @@ const MUSICXML_TYPE_TO_VEX: Record<string, string> = {
 
 @Injectable({ providedIn: 'root' })
 export class MusicXmlParserService {
+  private readonly harmonyAnalysis = inject(HarmonyAnalysisService);
+
   parse(xmlString: string): ParsedChorale {
     const parser = new DOMParser();
     const doc = parser.parseFromString(xmlString, 'application/xml');
@@ -66,6 +89,7 @@ export class MusicXmlParserService {
       doc.querySelector('key > fifths')?.textContent ?? '0',
       10,
     );
+    const isMinor = (doc.querySelector('key > mode')?.textContent?.toLowerCase() ?? '') === 'minor';
     const timeBeats = parseInt(
       doc.querySelector('time > beats')?.textContent ?? '4',
       10,
@@ -109,7 +133,9 @@ export class MusicXmlParserService {
     const measures = this.extractMeasures(voiceParts, fbPart);
     this.detectFigurations(measures);
 
-    return { title, partNames, beats, keyFifths, timeBeats, timeBeatType, measures };
+    const chorale: ParsedChorale = { title, partNames, beats, keyFifths, isMinor, timeBeats, timeBeatType, measures };
+    this.harmonyAnalysis.analyze(chorale);
+    return chorale;
   }
 
   private findFiguredBassPartIndex(parts: Element[]): number {
@@ -129,6 +155,7 @@ export class MusicXmlParserService {
     return Array.from({ length: measureCount }, (_, m) => ({
       partNotes: voiceParts.map((_, pi) => perPartMeasures[pi]?.[m] ?? []),
       figuredBass: fbPerMeasure[m] ?? [],
+      romanNumerals: [],
     }));
   }
 
