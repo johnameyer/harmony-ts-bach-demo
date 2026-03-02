@@ -1,8 +1,15 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { readFileSync } from 'fs';
+import { join } from 'path';
+import { describe, it, expect, beforeEach, beforeAll } from 'vitest';
 import { TestBed } from '@angular/core/testing';
 import { AbsoluteNote } from 'harmony-ts';
 import { HarmonyAnalysisService } from './harmony-analysis.service';
 import { MusicXmlParserService, ParsedChorale } from './music-xml-parser.service';
+
+const CHORALES_DIR = join(
+  process.cwd(),
+  'node_modules/Bach_chorale_FB/FB_source/musicXML_master',
+);
 
 // Minimal MusicXML for a I–V–I progression in C major (quarter notes throughout)
 const C_MAJOR_I_V_I_XML = `<?xml version="1.0" encoding="UTF-8"?>
@@ -180,5 +187,75 @@ describe('HarmonyAnalysisService', () => {
       // The analysis should either succeed or fall back to "?"
       expect(rn === null || rn?.base === '?' || typeof rn?.base === 'string').toBe(true);
     });
+  });
+});
+
+// ─── BWV 244.03 integration tests ───────────────────────────────────────────
+//
+// These tests load the actual MusicXML from the Bach_chorale_FB package and
+// verify that the analysis produces specific known-correct labels at key beat
+// positions.  Beat numbering in comments follows the problem statement's
+// 1-indexed convention; the parenthesised value is the 0-indexed absolute
+// quarter-note position used to locate the note inside the measure arrays.
+//
+// Bass-note index mapping for the early measures of BWV 244.03:
+//   Measure 1 (pickup):  bass note 0 = B3  (abs beat 0) → i
+//   Measure 2:           bass note 0 = E3  (abs beat 1) → iv (on-beat eighth, App? excluded from constraint, beat 1 still analysed)
+//                        bass note 2 = G3  (abs beat 2) → iv6
+//                        bass note 3 = F#3 (abs beat 3) → i64
+//                        bass note 4 = F#3 (abs beat 4) → V
+//   Measure 3:           bass note 0 = D3  (abs beat 5) → i6
+//                        bass note 1 = F#3 (abs beat 6) → V
+//   Measure 4:           bass note 0 = A#3 (abs beat 9) → V65
+//                        bass note 1 = B3  (abs beat 10) → i
+
+describe('HarmonyAnalysisService – BWV 244.03 regression tests', () => {
+  let service: MusicXmlParserService;
+  let chorale: ReturnType<MusicXmlParserService['parse']>;
+
+  beforeAll(() => {
+    TestBed.configureTestingModule({});
+    service = TestBed.inject(MusicXmlParserService);
+    const xml = readFileSync(join(CHORALES_DIR, 'BWV_244.03_FB.musicxml'), 'utf8');
+    chorale = service.parse(xml);
+  });
+
+  it('detects B minor as the home key (first chord is i)', () => {
+    const rn = chorale.measures[0].romanNumerals[0];
+    expect(rn?.base).toBe('i');
+    expect(rn?.superscript).toBe('');
+    expect(rn?.subscript).toBe('');
+  });
+
+  it('labels the chord at abs beat 2 (G in bass) as iv6', () => {
+    // Measure 2 bass note index 2 = G3 at abs beat 2.
+    const rn = chorale.measures[1].romanNumerals[2];
+    expect(rn?.base).toBe('iv');
+    expect(rn?.superscript).toBe('6');
+    expect(rn?.subscript).toBe('');
+  });
+
+  it('labels the chord at abs beat 5 (D in bass) as i6', () => {
+    // Measure 3 bass note index 0 = D3 at abs beat 5.
+    const rn = chorale.measures[2].romanNumerals[0];
+    expect(rn?.base).toBe('i');
+    expect(rn?.superscript).toBe('6');
+    expect(rn?.subscript).toBe('');
+  });
+
+  it('labels the chord at abs beat 9 (A# in bass) as V65', () => {
+    // Measure 4 bass note index 0 = A#3 at abs beat 9.
+    const rn = chorale.measures[3].romanNumerals[0];
+    expect(rn?.base).toBe('V');
+    expect(rn?.superscript).toBe('6');
+    expect(rn?.subscript).toBe('5');
+  });
+
+  it('labels the chord at abs beat 10 (B in bass) as i', () => {
+    // Measure 4 bass note index 1 = B3 at abs beat 10.
+    const rn = chorale.measures[3].romanNumerals[1];
+    expect(rn?.base).toBe('i');
+    expect(rn?.superscript).toBe('');
+    expect(rn?.subscript).toBe('');
   });
 });

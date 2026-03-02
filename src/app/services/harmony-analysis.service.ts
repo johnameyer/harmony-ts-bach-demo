@@ -31,6 +31,15 @@ function vexToBeat(vex: string): number {
 
 const EPS = 1e-9;
 
+/** Maximum generator iterations per beat when searching for the longest valid sequence. */
+const MAX_SEARCH_RESULTS = 50;
+
+/** Number of beats used to detect the home key. */
+const KEY_DETECT_BEATS = 16;
+
+/** Generator iteration limit used in the quick key-detection pass. */
+const QUICK_MATCH_LIMIT = 30;
+
 /**
  * Converts a RomanNumeral object to the structured display format used in the score.
  *
@@ -79,24 +88,35 @@ export class HarmonyAnalysisService {
    * Algorithm:
    *  1. Build one IncompleteChord per quarter-note beat, skipping any notes
    *     already identified as non-harmonic (figuration labels).
-   *  2. Walk through the constraints using Harmonizer.matchingHarmony with
-   *     canModulate=true, taking the first result that is an **exact** match
-   *     (no extra notes in the matched chord beyond the constraint voices).
-   *  3. On failure restart from the next beat (marking the failed beat "?"),
-   *     using the tonic as the new context — as described in the issue.
-   *  4. After analysis, confirm figuration labels: notes that are NOT in their
-   *     surrounding chord(s) have their "?" suffix removed; notes that ARE
+   *  2. Determine the home key by running a quick match-count for both the
+   *     parallel major and the relative minor; choose whichever yields more
+   *     successful matches in the opening measures.
+   *  3. Walk through the constraints using Harmonizer.matchingHarmony with
+   *     canModulate=true.  For each generator result apply the bass-anchored
+   *     filter (all constraint voices must be present in the chord; if a bass
+   *     voice is defined its note must also appear in the chord).  If the
+   *     matched chord's inversion does not already place the constraint bass
+   *     note in the lowest voice, relabel it to the correct inversion.
+   *     Among all valid results in the first MAX_SEARCH_RESULTS iterations,
+   *     prefer the one that covers the longest sequence of beats.
+   *  4. On failure restart from the next beat (marking it "?") using the
+   *     tonic chord as the new harmonic context.
+   *  5. After analysis, confirm figuration labels: notes NOT in their
+   *     surrounding chord(s) have their "?" suffix stripped; notes that are
    *     chord tones have their label cleared entirely.
    */
   analyze(chorale: ParsedChorale): void {
-    const scale = this.buildScale(chorale);
-    const harmonizer = new Harmonizer({ canModulate: true });
+    // Constraints must be built before choosing the scale so that the
+    // key-detection pass can reuse them.
     const beatConstraints = this.buildBeatConstraints(chorale);
     if (beatConstraints.length === 0) {
       return;
     }
 
     const constraints = beatConstraints.map((b) => b.constraint);
+    const scale = this.buildScale(chorale, constraints);
+
+    const harmonizer = new Harmonizer({ canModulate: true });
 
     // Starting / restart context: treat the tonic as the implicit "previous" chord.
     const tonicRN = new RomanNumeral(
@@ -118,45 +138,43 @@ export class HarmonyAnalysisService {
     let prevRN: RomanNumeral = tonicRN;
 
     while (position < beatConstraints.length) {
-      const bc = beatConstraints[position];
-      const definedVoices = (bc.constraint.voices ?? [])
-        .filter((v): v is AbsoluteNote => v !== null && v !== undefined).length;
-
-      // Apply exact matching (no extra chord notes beyond the constraint voices)
-      // only when enough voices are defined for a reliable match.
-      // With fewer voices, fall back to the standard first-result behaviour.
-      const requireExact = definedVoices >= 3;
-
-      let found = false;
+      let bestRelabeled: (RomanNumeral | null)[] | null = null;
+      let bestLen = 0;
+      let bestNext: RomanNumeral = tonicRN;
 
       try {
+        let iterations = 0;
         for (const [ matchedChords, nextRN ] of harmonizer.matchingHarmony(constraints, position, prevRN)) {
-          if (requireExact && !this.isExactMatch(matchedChords, constraints, position)) {
-            continue;
+          const relabeled = this.applyBassFilter(matchedChords, constraints, position);
+          if (relabeled !== null && matchedChords.length > bestLen) {
+            bestLen = matchedChords.length;
+            bestRelabeled = relabeled;
+            bestNext = nextRN;
           }
-
-          for (let i = 0; i < matchedChords.length; i++) {
-            const beatIndex = beatConstraints[position + i]?.beatIndex;
-            if (beatIndex !== undefined) {
-              const rn = matchedChords[i]?.romanNumeral;
-              if (rn) {
-                romanByBeat.set(beatIndex, toRomanNumeralAnalysis(rn));
-                chordByBeat.set(beatIndex, rn);
-              }
-            }
+          iterations++;
+          if (iterations >= MAX_SEARCH_RESULTS) {
+            break;
           }
-
-          position += matchedChords.length;
-          prevRN = nextRN;
-          found = true;
-          break;
         }
       } catch {
         // harmony-ts may throw for out-of-range accidentals on unusual modulations.
         // Treat as unanalysable and move on.
       }
 
-      if (!found) {
+      if (bestRelabeled !== null) {
+        for (let i = 0; i < bestRelabeled.length; i++) {
+          const beatIndex = beatConstraints[position + i]?.beatIndex;
+          if (beatIndex !== undefined) {
+            const rn = bestRelabeled[i];
+            if (rn) {
+              romanByBeat.set(beatIndex, toRomanNumeralAnalysis(rn));
+              chordByBeat.set(beatIndex, rn);
+            }
+          }
+        }
+        position += bestLen;
+        prevRN = bestNext;
+      } else {
         // Cannot harmonize this beat – mark as unknown and restart from next beat.
         romanByBeat.set(beatConstraints[position].beatIndex, null);
         prevRN = tonicRN;
@@ -169,71 +187,157 @@ export class HarmonyAnalysisService {
   }
 
   /**
-   * Returns true iff every matched chord contains **only** notes that are
-   * present in the corresponding constraint's voices (strict / exact match).
-   * The harmonizer normally allows missing notes; this filter removes results
-   * where the chord introduces a note absent from all four constraint voices.
+   * Checks whether `matchedChords` satisfies the bass-anchored filter for
+   * every beat in the sequence, and returns relabeled RomanNumeral objects
+   * (correct inversion derived from the constraint bass) or null on failure.
+   *
+   * Filter criteria per beat:
+   *  - Every note present in the constraint voices must exist in the chord.
+   *  - If the bass voice (voices[3]) is defined, its note must also be in
+   *    the chord (the inversion is then adjusted so that note becomes the
+   *    chord bass).
    */
-  private isExactMatch(
+  private applyBassFilter(
     matchedChords: { romanNumeral: RomanNumeral }[],
     constraints: IncompleteChord[],
     position: number,
-  ): boolean {
+  ): (RomanNumeral | null)[] | null {
+    const relabeled: (RomanNumeral | null)[] = [];
     for (let i = 0; i < matchedChords.length; i++) {
       const rn = matchedChords[i]?.romanNumeral;
       if (!rn) {
+        relabeled.push(null);
         continue;
       }
-      const constraintVoices = constraints[position + i]?.voices ?? [];
-      const constraintNoteNames = new Set(
-        constraintVoices
-          .filter((v): v is AbsoluteNote => v !== null && v !== undefined)
-          .map((v) => v.simpleName),
-      );
-      const chordNoteNames = rn.notes.map((n) => n.simpleName);
-      if (chordNoteNames.some((n) => !constraintNoteNames.has(n))) {
-        return false;
+      const voices = constraints[position + i]?.voices ?? [];
+      const rnNoteNames = new Set(rn.notes.map((n) => n.simpleName));
+
+      // All defined constraint voices must appear in the chord.
+      for (const v of voices) {
+        if (v !== null && v !== undefined && !rnNoteNames.has(v.simpleName)) {
+          return null;
+        }
+      }
+
+      // If the bass voice is defined, the chord must contain that note and we
+      // relabel to the inversion that places it in the lowest position.
+      const bassVoice = voices[3] as AbsoluteNote | undefined;
+      if (bassVoice) {
+        if (!rnNoteNames.has(bassVoice.simpleName)) {
+          return null;
+        }
+        relabeled.push(this.relabelForBass(rn, bassVoice.simpleName));
+      } else {
+        relabeled.push(rn);
       }
     }
-    return true;
+    return relabeled;
   }
 
-  /** Convert keyFifths + isMinor into a harmony-ts Scale tuple.
-   *
-   * When the MusicXML does not specify `<mode>`, we use a heuristic:
-   * if the first bass note matches the relative minor tonic, treat the
-   * piece as minor (Bach chorales always start with the tonic in the bass).
+  /**
+   * Returns a (possibly new) RomanNumeral whose inversion places `bassSimpleName`
+   * in the lowest voice.  If the chord already has that note in the bass, the
+   * original object is returned unchanged.
    */
-  private buildScale(chorale: ParsedChorale): Scale {
+  private relabelForBass(rn: RomanNumeral, bassSimpleName: string): RomanNumeral {
+    const noteNames = rn.notes.map((n) => n.simpleName);
+    const idx = noteNames.indexOf(bassSimpleName);
+    if (idx === -1 || idx === rn.inversion) {
+      return rn;
+    }
+    return new RomanNumeral(
+      {
+        scaleDegree: rn.scaleDegree,
+        quality: rn.quality,
+        inversion: idx,
+        hasSeventh: rn.hasSeventh,
+        accidental: rn.accidental,
+        applied: rn.applied,
+      },
+      rn.scale,
+    );
+  }
+
+  /**
+   * Convert keyFifths + isMinor into a harmony-ts Scale tuple.
+   *
+   * When the MusicXML does not specify `<mode>minor`, both the parallel major
+   * (keyFifths) and the relative minor (keyFifths + 3) are tried against the
+   * opening constraints.  Whichever yields more successful bass-anchored matches
+   * in the first KEY_DETECT_BEATS beats is chosen as the home key.
+   */
+  private buildScale(chorale: ParsedChorale, constraints: IncompleteChord[]): Scale {
     if (chorale.isMinor) {
       const minorKey = Math.max(-7, Math.min(7, chorale.keyFifths + 3)) as Key;
       return [ minorKey, Scale.Quality.MINOR ];
     }
 
-    // Heuristic: check if first bass note is the relative minor tonic.
+    const majorScale: Scale = [ chorale.keyFifths as Key, Scale.Quality.MAJOR ];
     const relMinorFifths = chorale.keyFifths + 3;
-    if (relMinorFifths >= -7 && relMinorFifths <= 7) {
-      const relMinorKey = relMinorFifths as Key;
-      const relMinorTonic = Key.toNote(relMinorKey).simpleName;
-      const firstBass = this.findFirstBassNote(chorale);
-      if (firstBass?.simpleName === relMinorTonic) {
-        return [ relMinorKey, Scale.Quality.MINOR ];
-      }
+    if (relMinorFifths < -7 || relMinorFifths > 7) {
+      return majorScale;
     }
+    const minorScale: Scale = [ relMinorFifths as Key, Scale.Quality.MINOR ];
 
-    return [ chorale.keyFifths as Key, Scale.Quality.MAJOR ];
+    const majorCount = this.countQuickMatches(constraints, majorScale);
+    const minorCount = this.countQuickMatches(constraints, minorScale);
+    return minorCount > majorCount ? minorScale : majorScale;
   }
 
-  /** Returns the first non-null bass note in the chorale (part index 3). */
-  private findFirstBassNote(chorale: ParsedChorale): AbsoluteNote | null {
-    for (const measure of chorale.measures) {
-      for (const n of (measure.partNotes[3] ?? [])) {
-        if (n.note) {
-          return n.note;
+  /**
+   * Quick key-detection pass: counts how many of the first KEY_DETECT_BEATS
+   * beat constraints produce a valid bass-anchored match (all constraint notes
+   * in the chord, constraint bass in the chord) under the given scale.
+   */
+  private countQuickMatches(constraints: IncompleteChord[], scale: Scale): number {
+    const harmonizer = new Harmonizer({ canModulate: true });
+    const tonic = new RomanNumeral(
+      {
+        scaleDegree: ScaleDegree.TONIC,
+        quality:
+          scale[1] === Scale.Quality.MAJOR
+            ? ChordQuality.MAJOR
+            : ChordQuality.MINOR,
+      },
+      scale,
+    );
+
+    const checkCount = Math.min(constraints.length, KEY_DETECT_BEATS);
+    let prevRN: RomanNumeral = tonic;
+    let successes = 0;
+
+    for (let pos = 0; pos < checkCount; pos++) {
+      const voices = constraints[pos].voices ?? [];
+      const bassVoice = voices[3] as AbsoluteNote | undefined;
+
+      let found = false;
+      let count = 0;
+      try {
+        for (const [ chords, next ] of harmonizer.matchingHarmony(constraints, pos, prevRN)) {
+          const rn = chords[0].romanNumeral;
+          const rnNotes = new Set(rn.notes.map((n) => n.simpleName));
+          const allIn = voices.every((v) => v === null || v === undefined || rnNotes.has(v.simpleName));
+          const bassOk = !bassVoice || rnNotes.has(bassVoice.simpleName);
+          if (allIn && bassOk) {
+            prevRN = next;
+            successes++;
+            found = true;
+            break;
+          }
+          count++;
+          if (count >= QUICK_MATCH_LIMIT) {
+            break;
+          }
         }
+      } catch {
+        // harmony-ts may throw for out-of-range accidentals on unusual modulations.
+      }
+
+      if (!found) {
+        prevRN = tonic;
       }
     }
-    return null;
+    return successes;
   }
 
   /**
