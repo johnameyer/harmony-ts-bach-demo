@@ -32,38 +32,37 @@ const EPS = 1e-9;
 /** Maximum harmonizer iterations per variant when searching for the longest valid match. */
 const MAX_SEARCH_RESULTS = 50;
 
-/**
- * Number of slices (at half-beat resolution) used for key detection.
- * 32 half-beat slices ≈ 16 quarter-note beats.
- */
-const KEY_DETECT_SLICES = 32;
+/** Number of beats used for key detection. */
+const KEY_DETECT_BEATS = 16;
 
 /** Generator iteration limit used in the quick key-detection pass. */
 const QUICK_MATCH_LIMIT = 30;
 
 /**
- * A "slice" captures the harmonic constraint at one sub-beat position.
- *
- * Two variants are built per slice:
- *  - fullConstraint:     all notes that START at this position (including figurated ones).
- *  - filteredConstraint: only non-figurated notes that start at this position.
- *
- * The analysis first tries the full variant so that potential non-chord tones
- * (appoggiatura, passing tones) are offered to the harmonizer as real chord tones.
- * Only when the full variant fails does the filtered variant act as a fallback.
+ * A single note option for one voice at a quarter-beat position.
+ * Tracks whether this note has a figuration label so filtered variants can
+ * exclude it.
  */
-interface BeatSlice {
-  /**
-   * Half-beat key: `Math.round(beatPosition * 2)`.
-   * Used as the Map key throughout (integers, avoids float comparisons).
-   */
-  beatKey: number;
-  /** Actual fractional beat position: `beatKey / 2`. */
-  beatPosition: number;
-  /** IncompleteChord including ALL notes starting at this position. */
-  fullConstraint: IncompleteChord;
-  /** IncompleteChord with only non-figurated notes starting here. */
+interface VoiceNote {
+  note: import('harmony-ts').AbsoluteNote;
+  figurated: boolean;
+}
+
+/**
+ * One entry per quarter-note beat in the chorale.
+ *
+ *  - `beatIndex`:          integer quarter-beat position (0, 1, 2, …).
+ *  - `filteredConstraint`: IncompleteChord with only non-figurated notes that
+ *                          start exactly at this beat — used for key detection.
+ *  - `variants`:           All IncompleteChord combinations built from the
+ *                          Cartesian product of the sub-beat notes for each
+ *                          voice, both full (including figurated) and filtered.
+ *                          The main analysis loop tries these in order.
+ */
+interface QuarterBeat {
+  beatIndex: number;
   filteredConstraint: IncompleteChord;
+  variants: IncompleteChord[];
 }
 
 /**
@@ -105,6 +104,16 @@ function toRomanNumeralAnalysis(rn: RomanNumeral): RomanNumeralAnalysis {
   };
 }
 
+/** Returns the Cartesian product of an array of option arrays. */
+function cartesianProduct<T>(arrays: T[][]): T[][] {
+  if (arrays.length === 0) {
+    return [[]];
+  }
+  const [ first, ...rest ] = arrays;
+  const restProduct = cartesianProduct(rest);
+  return first.flatMap((item) => restProduct.map((combo) => [ item, ...combo ]));
+}
+
 @Injectable({ providedIn: 'root' })
 export class HarmonyAnalysisService {
   /**
@@ -112,40 +121,32 @@ export class HarmonyAnalysisService {
    * directly in each measure's `romanNumerals` array (aligned with bass notes).
    *
    * Algorithm:
-   *  1. Build one BeatSlice per eighth-note (half-beat) position from the chorale.
-   *     Each slice carries two IncompleteChord variants:
-   *       - fullConstraint:     all notes that START at this position (incl. figurated).
-   *       - filteredConstraint: only non-figurated notes that start here.
-   *  2. Determine the home key by counting how many filtered, quarter-note-boundary
-   *     constraints match under each candidate scale (parallel major vs relative minor).
-   *  3. Walk through the slices using a nested iterable pipeline:
-   *       a. At each position, build a "stream of possible vertical slices" by
-   *          passing the full-constraint array first through matchingHarmony.
-   *       b. Among all results in the first MAX_SEARCH_RESULTS iterations, keep
-   *          the one with the most positions covered (longest match), provided the
-   *          chord's actual bass note (notes[inversion]) matches the constraint's
-   *          bass voice.  The roman numeral is taken directly from the harmonizer
-   *          output — no re-labelling is performed.
-   *       c. If the full-constraint stream yields no valid match, repeat (a)-(b)
-   *          with the filtered-constraint array (figurated notes removed).
-   *       d. On failure mark the current slice "?" and restart from the next one.
+   *  1. Build one QuarterBeat per quarter-note beat from the chorale.  For each
+   *     beat, the `variants` array contains all IncompleteChord combinations
+   *     derived from the Cartesian product of sub-beat note options for each
+   *     voice (beat-boundary note vs. half-beat note), in both full (including
+   *     figurated) and filtered (non-figurated) versions.
+   *  2. Determine the home key by running a quick match-count for the parallel
+   *     major and the relative minor using the filtered beat-boundary constraints;
+   *     the scale with more successes is chosen.
+   *  3. Walk through the quarter beats using a greedy longest-match pipeline:
+   *       a. At each position, try every variant through matchingHarmony first
+   *          WITHOUT modulation (canModulate=false), then WITH modulation as a
+   *          fallback.  Among all passing results in the first MAX_SEARCH_RESULTS
+   *          iterations, keep the one covering the most beats (longest match)
+   *          provided the chord's actual bass note matches the constraint bass.
+   *       b. On failure mark the current beat "?" and restart from the next.
    *  4. After analysis, confirm figuration labels: notes NOT in their surrounding
-   *     chord(s) are confirmed non-chord tones (trailing "?" stripped); notes that
-   *     ARE chord tones have their label cleared entirely.
+   *     chord(s) are confirmed non-chord tones (trailing "?" stripped); notes
+   *     that ARE chord tones have their label cleared.
    */
   analyze(chorale: ParsedChorale): void {
-    const slices = this.buildAllSlices(chorale);
-    if (slices.length === 0) {
+    const beats = this.buildQuarterBeats(chorale);
+    if (beats.length === 0) {
       return;
     }
 
-    // Key detection uses only filtered slices at quarter-note boundaries.
-    const quarterFiltered = slices
-      .filter((s) => s.beatKey % 2 === 0)
-      .map((s) => s.filteredConstraint);
-    const scale = this.buildScale(chorale, quarterFiltered);
-
-    const harmonizer = new Harmonizer({ canModulate: true });
+    const scale = this.buildScale(chorale, beats.map((b) => b.filteredConstraint));
 
     // Starting / restart context: treat the tonic as the implicit "previous" chord.
     const tonicRN = new RomanNumeral(
@@ -165,55 +166,107 @@ export class HarmonyAnalysisService {
     let position = 0;
     let prevRN: RomanNumeral = tonicRN;
 
-    while (position < slices.length) {
-      const remaining = slices.slice(position);
+    while (position < beats.length) {
+      const remaining = beats.slice(position);
 
       let bestChords: { romanNumeral: RomanNumeral }[] | null = null;
+      let bestApplied = Infinity; // Applied-chord count in best result (fewer is better).
       let bestLen = 0;
       let bestNext: RomanNumeral = tonicRN;
 
-      // Variant stream: try full constraints first (figurated notes as potential
-      // chord tones); fall back to filtered only when full yields nothing.
-      for (const constraints of [
-        remaining.map((s) => s.fullConstraint),
-        remaining.map((s) => s.filteredConstraint),
-      ]) {
-        try {
-          let iterations = 0;
-          for (const [ chords, next ] of harmonizer.matchingHarmony(constraints, 0, prevRN)) {
-            if (this.passesBassFilter(chords, constraints) && chords.length > bestLen) {
-              bestLen = chords.length;
-              bestChords = chords;
-              bestNext = next;
-            }
-            if (++iterations >= MAX_SEARCH_RESULTS) {
-              break;
-            }
-          }
-        } catch {
-          // harmony-ts may throw for out-of-range accidentals on unusual modulations.
+      /**
+       * Compare a candidate match using the scoring criteria from the problem
+       * statement: prefer fewest applied chords first, then prefer longest
+       * sequence (most beats covered).
+       *
+       *  Primary:   applied-chord count  (lower  is better)
+       *  Secondary: sequence length      (higher is better)
+       */
+      const isBetter = (chords: { romanNumeral: RomanNumeral }[]): boolean => {
+        const applied = chords.filter((c) => c.romanNumeral?.applied !== null).length;
+        if (applied < bestApplied) {
+          return true;
         }
+        if (applied === bestApplied && chords.length > bestLen) {
+          return true;
+        }
+        return false;
+      };
+
+      // Strategy: try without modulation first (prevents false key changes from
+      // spuriously long modulated paths); fall back to canModulate=true only
+      // when the non-modulating pass finds nothing.
+      for (const canModulate of [ false, true ]) {
         if (bestLen > 0) {
-          break; // Full-constraint stream succeeded — do not fall through to filtered.
+          break;
+        }
+        const harmonizer = new Harmonizer({ canModulate });
+
+        // Try each note-combination variant for the leading beat.
+        // The variants cover both full (figurated-inclusive) and filtered
+        // (non-figurated) combinations; they are tried in the order built by
+        // buildQuarterBeats (full before filtered, more notes before fewer).
+        //
+        // vi = 0: use filteredConstraint (non-figurated beat-boundary notes) for
+        //         ALL positions — this matches the original single-constraint-per-beat
+        //         behaviour.  Length is capped at 1 to prevent the harmonizer from
+        //         greedily extending a sequence when most constraints are all-undefined
+        //         (which would happen when figuration detection marks everything at a
+        //         beat as non-chord tones).
+        // vi > 0: try a specific note-combination variant for the FIRST position while
+        //         using variants[0] (full notes, may include figurated) for subsequent
+        //         positions so the bass filter works correctly in multi-beat matches.
+        //         Allows length > 1 to pick up chord expansions (V43 → i6, etc.).
+        const variantCount = remaining[0].variants.length;
+        for (let vi = 0; vi < variantCount; vi++) {
+          const constraints = remaining.map((qb, idx) => {
+            if (vi === 0) {
+              // Baseline pass: pure filtered constraints everywhere.
+              return qb.filteredConstraint;
+            }
+            // Enhanced pass: specific variant for first beat, full variant for rest.
+            return idx === 0 ? qb.variants[vi] : (qb.variants[0] ?? qb.filteredConstraint);
+          });
+
+          // For the baseline pass only look at single-beat results to avoid
+          // consuming beats with spuriously long all-same-chord sequences.
+          const maxLen = vi === 0 ? 1 : MAX_SEARCH_RESULTS;
+
+          try {
+            let iterations = 0;
+            for (const [ chords, next ] of harmonizer.matchingHarmony(constraints, 0, prevRN)) {
+              if (chords.length <= maxLen
+                && this.passesBassFilter(chords, constraints)
+                && isBetter(chords)) {
+                bestApplied = chords.filter((c) => c.romanNumeral?.applied !== null).length;
+                bestLen = chords.length;
+                bestChords = chords;
+                bestNext = next;
+              }
+              if (++iterations >= MAX_SEARCH_RESULTS) {
+                break;
+              }
+            }
+          } catch {
+            // harmony-ts may throw for out-of-range accidentals on unusual modulations.
+          }
+          if (bestLen > 0) {
+            break;
+          }
         }
       }
 
       if (bestChords !== null) {
         for (let i = 0; i < bestLen; i++) {
-          const slice = slices[position + i];
-          const beatKey = slice?.beatKey;
-          if (beatKey !== undefined) {
-            const rn = bestChords[i]?.romanNumeral;
+          const beat = beats[position + i];
+          if (beat !== undefined) {
+            const rn = this.relabelForBass(bestChords[i]?.romanNumeral, i === 0
+              ? (remaining[0].variants[0] ?? remaining[0].filteredConstraint)
+              : (remaining[i]?.variants[0] ?? remaining[i]?.filteredConstraint));
             if (rn) {
-              romanByBeat.set(beatKey, toRomanNumeralAnalysis(rn));
-              // Only record the chord for figuration confirmation when the slice
-              // has at least one non-figurated note (filteredConstraint not all-undefined).
-              // This prevents clearing tentative labels at purely-figurated positions.
-              const hasNonFig = (slice.filteredConstraint.voices ?? []).some(
-                (v) => v !== undefined,
-              );
-              if (hasNonFig) {
-                chordByBeat.set(beatKey, rn);
+              romanByBeat.set(beat.beatIndex, toRomanNumeralAnalysis(rn));
+              if ((beat.filteredConstraint.voices ?? []).some((v) => v !== undefined)) {
+                chordByBeat.set(beat.beatIndex, rn);
               }
             }
           }
@@ -221,8 +274,8 @@ export class HarmonyAnalysisService {
         position += bestLen;
         prevRN = bestNext;
       } else {
-        // Cannot harmonize this slice — mark as unknown and restart from next.
-        romanByBeat.set(slices[position].beatKey, null);
+        // Cannot harmonize this beat — mark as unknown and restart from next.
+        romanByBeat.set(beats[position].beatIndex, null);
         prevRN = tonicRN;
         position++;
       }
@@ -233,11 +286,10 @@ export class HarmonyAnalysisService {
   }
 
   /**
-   * Returns true if every chord in the sequence satisfies two conditions:
+   * Returns true when every chord in the sequence satisfies:
    *  1. All defined constraint voices appear in the chord's note set.
-   *  2. The chord's actual bass note (notes[inversion]) matches the constraint's
-   *     bass voice (voices[3]), so the correct inversion is required without
-   *     re-labelling (e.g. iv6 with G in bass is preferred over iv root with E).
+   *  2. The constraint bass voice (`voices[3]`) appears somewhere in the chord's
+   *     note set (any inversion).  Actual inversion is resolved by relabelForBass.
    */
   private passesBassFilter(
     chords: { romanNumeral: RomanNumeral }[],
@@ -257,40 +309,72 @@ export class HarmonyAnalysisService {
           return false;
         }
       }
-
-      // Bass voice must match the chord's actual bass note position.
-      const bassConstraint = voices[3];
-      if (bassConstraint) {
-        const chordBassNote = rn.notes[rn.inversion];
-        if (chordBassNote && chordBassNote.simpleName !== bassConstraint.simpleName) {
-          return false;
-        }
-      }
     }
     return true;
   }
 
   /**
-   * Build one BeatSlice for every eighth-note (half-beat) position in the
-   * chorale.  Only notes that start exactly on a half-beat boundary are
-   * included; held notes from earlier beats are omitted.
-   *
-   * Full variant:     all starting notes, including those tagged as figurations.
-   * Filtered variant: only notes with no figuration label.
+   * Given a RomanNumeral from the harmonizer and the constraint for that beat,
+   * returns the same chord relabelled to the inversion that places the constraint
+   * bass note (`voices[3]`) at the bass position.  If the bass note is not in
+   * the chord, or there is no bass constraint, the original is returned unchanged.
    */
-  private buildAllSlices(chorale: ParsedChorale): BeatSlice[] {
-    // fullVoices / filteredVoices: beatKey → [soprano, alto, tenor, bass]
-    const fullVoices = new Map<number, (IncompleteChord['voices'][number])[]>();
-    const filteredVoices = new Map<number, (IncompleteChord['voices'][number])[]>();
+  private relabelForBass(
+    rn: RomanNumeral | undefined,
+    constraint: IncompleteChord | undefined,
+  ): RomanNumeral | undefined {
+    if (!rn) {
+      return undefined;
+    }
+    const bassNote = constraint?.voices?.[3];
+    if (!bassNote) {
+      return rn;
+    }
+    const invIdx = rn.notes.findIndex((n) => n.simpleName === bassNote.simpleName);
+    if (invIdx < 0 || invIdx === rn.inversion) {
+      return rn;
+    }
+    // Re-create the RomanNumeral with the correct inversion.
+    try {
+      return rn.with({ inversion: invIdx });
+    } catch {
+      return rn;
+    }
+  }
 
-    const ensureVoices = (
-      map: Map<number, (IncompleteChord['voices'][number])[]>,
-      key: number,
-    ) => {
-      if (!map.has(key)) {
-        map.set(key, [ undefined, undefined, undefined, undefined ]);
+  /**
+   * Builds one QuarterBeat per quarter-note beat.
+   *
+   * For each voice, notes that start within the quarter-note window
+   * [beat, beat+1) are collected as options (beat-boundary note and/or
+   * half-beat note).  The Cartesian product of all voice options is then
+   * expanded into IncompleteChord variants, covering both full (figurated
+   * notes included) and filtered (figurated notes replaced by undefined)
+   * versions.  Duplicate chords are deduplicated.
+   *
+   * The `filteredConstraint` field contains only non-figurated notes that
+   * start EXACTLY at the beat boundary — this is used for key detection and
+   * matches the previous single-constraint-per-beat behaviour.
+   */
+  private buildQuarterBeats(chorale: ParsedChorale): QuarterBeat[] {
+    // beatIndex → voice index → list of {note, figurated}
+    const beatVoiceNotes = new Map<number, VoiceNote[][]>();
+
+    const getOrCreate = (key: number): VoiceNote[][] => {
+      if (!beatVoiceNotes.has(key)) {
+        beatVoiceNotes.set(key, [[], [], [], []]);
       }
-      return map.get(key)!;
+      return beatVoiceNotes.get(key)!;
+    };
+
+    // beatIndex → voice index → {note, figurated} at the exact beat boundary
+    const onBeatNotes = new Map<number, (VoiceNote | undefined)[]>();
+
+    const getOrCreateOnBeat = (key: number): (VoiceNote | undefined)[] => {
+      if (!onBeatNotes.has(key)) {
+        onBeatNotes.set(key, [ undefined, undefined, undefined, undefined ]);
+      }
+      return onBeatNotes.get(key)!;
     };
 
     let measureStart = 0;
@@ -300,13 +384,13 @@ export class HarmonyAnalysisService {
         let partBeat = measureStart;
         for (const n of (measure.partNotes[partIdx] ?? [])) {
           if (n.note) {
-            // Round to the nearest half-beat boundary.
-            const beatKey = Math.round(partBeat * 2);
-            if (Math.abs(partBeat - beatKey / 2) < EPS) {
-              ensureVoices(fullVoices, beatKey)[partIdx] = n.note;
-              if (!n.figuration) {
-                ensureVoices(filteredVoices, beatKey)[partIdx] = n.note;
-              }
+            const beatIndex = Math.floor(partBeat + EPS);
+            const voiceNote: VoiceNote = { note: n.note, figurated: !!n.figuration };
+            getOrCreate(beatIndex)[partIdx].push(voiceNote);
+
+            // Track exact beat-boundary notes for filteredConstraint / key detection.
+            if (Math.abs(partBeat - beatIndex) < EPS) {
+              getOrCreateOnBeat(beatIndex)[partIdx] = voiceNote;
             }
           }
           partBeat += vexToBeat(n.vexDuration);
@@ -317,19 +401,71 @@ export class HarmonyAnalysisService {
       }
     }
 
-    const allKeys = new Set([ ...fullVoices.keys(), ...filteredVoices.keys() ]);
+    const allKeys = new Set([ ...beatVoiceNotes.keys(), ...onBeatNotes.keys() ]);
     return Array.from(allKeys)
       .sort((a, b) => a - b)
-      .map((beatKey) => ({
-        beatKey,
-        beatPosition: beatKey / 2,
-        fullConstraint: new IncompleteChord({
-          voices: fullVoices.get(beatKey) ?? [ undefined, undefined, undefined, undefined ],
-        }),
-        filteredConstraint: new IncompleteChord({
-          voices: filteredVoices.get(beatKey) ?? [ undefined, undefined, undefined, undefined ],
-        }),
-      }));
+      .map((beatIndex) => {
+        const perVoice = beatVoiceNotes.get(beatIndex) ?? [[], [], [], []];
+        const onBeat = onBeatNotes.get(beatIndex) ?? [ undefined, undefined, undefined, undefined ];
+
+        // filteredConstraint: non-figurated beat-boundary notes only.
+        const filteredVoices = onBeat.map((vn) => vn !== undefined && !vn.figurated ? vn.note : undefined,
+        );
+        const filteredConstraint = new IncompleteChord({ voices: filteredVoices });
+
+        // Build variants via Cartesian product of per-voice note options.
+        // Each voice contributes: its notes collected above, plus undefined
+        // (allows a voice to be unconstrained).
+        const voiceOptions: (import('harmony-ts').AbsoluteNote | undefined)[][] =
+          perVoice.map((notes) => {
+            if (notes.length === 0) {
+              return [ undefined ];
+            }
+            // Unique notes + undefined option (unconstrained).
+            const seen = new Set<string>();
+            const opts: (import('harmony-ts').AbsoluteNote | undefined)[] = [];
+            for (const vn of notes) {
+              if (!seen.has(vn.note.simpleName)) {
+                seen.add(vn.note.simpleName);
+                opts.push(vn.note);
+              }
+            }
+            opts.push(undefined);
+            return opts;
+          });
+
+        const combos = cartesianProduct(voiceOptions);
+
+        // Build IncompleteChord for each combo; also build a filtered version
+        // (figurated notes replaced by undefined) and add it if distinct.
+        const seenKeys = new Set<string>();
+        const variants: IncompleteChord[] = [];
+
+        const addVariant = (voices: (import('harmony-ts').AbsoluteNote | undefined)[]) => {
+          const key = voices.map((v) => v?.simpleName ?? '_').join(',');
+          if (!seenKeys.has(key)) {
+            seenKeys.add(key);
+            variants.push(new IncompleteChord({ voices }));
+          }
+        };
+
+        for (const combo of combos) {
+          // Full variant (may include figurated notes).
+          addVariant(combo);
+
+          // Filtered variant: replace figurated notes with undefined.
+          const filtered = combo.map((note, vi) => {
+            if (!note) {
+              return undefined;
+            }
+            const match = perVoice[vi].find((vn) => vn.note === note);
+            return match?.figurated ? undefined : note;
+          });
+          addVariant(filtered);
+        }
+
+        return { beatIndex, filteredConstraint, variants };
+      });
   }
 
   /**
@@ -338,7 +474,11 @@ export class HarmonyAnalysisService {
    * When the MusicXML does not specify `<mode>minor`, both the parallel major
    * (keyFifths) and the relative minor (keyFifths + 3) are tried against the
    * opening constraints.  Whichever yields more successful bass-anchored matches
-   * in the first KEY_DETECT_SLICES slices is chosen as the home key.
+   * in the first KEY_DETECT_BEATS beats is chosen as the home key.
+   *
+   * Additionally, if the first bass note matches the relative-minor tonic and
+   * ≥ 3 voices are defined at the opening beat, the minor scale is preferred
+   * directly (avoids false ties when figurations make many beats ambiguous).
    */
   private buildScale(chorale: ParsedChorale, constraints: IncompleteChord[]): Scale {
     if (chorale.isMinor) {
@@ -353,13 +493,33 @@ export class HarmonyAnalysisService {
     }
     const minorScale: Scale = [ relMinorFifths as Key, Scale.Quality.MINOR ];
 
+    // Heuristic: if the opening bass note matches the relative-minor tonic and
+    // at least 3 voices are defined (to reduce false positives), immediately
+    // prefer the minor scale without running the full count-based detection.
+    // This handles the common case where figuration detection makes many beats
+    // ambiguous between the relative major and minor.
+    const firstConstraint = constraints[0];
+    if (firstConstraint) {
+      const bassNote = firstConstraint.voices?.[3];
+      const voiceCount = (firstConstraint.voices ?? []).filter((v) => v !== undefined).length;
+      if (bassNote && voiceCount >= 3) {
+        const minorTonicRN = new RomanNumeral(
+          { scaleDegree: ScaleDegree.TONIC, quality: ChordQuality.MINOR },
+          minorScale,
+        );
+        if (bassNote.simpleName === minorTonicRN.root?.simpleName) {
+          return minorScale;
+        }
+      }
+    }
+
     const majorCount = this.countQuickMatches(constraints, majorScale);
     const minorCount = this.countQuickMatches(constraints, minorScale);
     return minorCount > majorCount ? minorScale : majorScale;
   }
 
   /**
-   * Quick key-detection pass: counts how many of the first KEY_DETECT_SLICES
+   * Quick key-detection pass: counts how many of the first KEY_DETECT_BEATS
    * constraints produce a valid bass-anchored match under the given scale.
    */
   private countQuickMatches(constraints: IncompleteChord[], scale: Scale): number {
@@ -375,7 +535,7 @@ export class HarmonyAnalysisService {
       scale,
     );
 
-    const checkCount = Math.min(constraints.length, KEY_DETECT_SLICES);
+    const checkCount = Math.min(constraints.length, KEY_DETECT_BEATS);
     let prevRN: RomanNumeral = tonic;
     let successes = 0;
 
@@ -409,9 +569,9 @@ export class HarmonyAnalysisService {
    * Write the analysis results back into each measure's `romanNumerals` array,
    * aligned with the bass notes (partNotes[3]).
    *
-   * Any bass note that starts exactly on a half-beat boundary and has a
-   * corresponding entry in `romanByBeat` receives that label.  A null entry
-   * (analysis attempted but failed) is rendered as "?".
+   * A bass note that starts exactly on a quarter-note boundary gets the roman
+   * numeral label for that beat.  A beat that was attempted but failed analysis
+   * is rendered as "?".
    */
   private applyToMeasures(
     chorale: ParsedChorale,
@@ -424,10 +584,9 @@ export class HarmonyAnalysisService {
 
       let bassBeat = measureStart;
       for (let i = 0; i < bassNotes.length; i++) {
-        // Use half-beat precision so eighth-note bass positions are also labelled.
-        const beatKey = Math.round(bassBeat * 2);
-        if (Math.abs(bassBeat - beatKey / 2) < EPS && romanByBeat.has(beatKey)) {
-          const rn = romanByBeat.get(beatKey);
+        const key = Math.round(bassBeat);
+        if (Math.abs(bassBeat - key) < EPS && romanByBeat.has(key)) {
+          const rn = romanByBeat.get(key);
           measure.romanNumerals[i] = rn ?? { base: '?', superscript: '', subscript: '' };
         }
         bassBeat += vexToBeat(bassNotes[i].vexDuration);
@@ -443,13 +602,12 @@ export class HarmonyAnalysisService {
    * Post-process figuration labels using the chord analysis.
    *
    * - Tentative figuration labels ("P?", "Sus?", etc.) are checked against
-   *   the chord(s) at the surrounding half-beat positions.
+   *   the chord(s) at the surrounding quarter-note beats.
    * - If the note's pitch is NOT in any surrounding chord → confirmed
    *   non-chord tone: remove the trailing "?".
    * - If the note's pitch IS in a surrounding chord → clear the label entirely
    *   (the figuration detector mis-classified it as non-harmonic).
-   * - If no chord data is available at the surrounding positions, the tentative
-   *   label is left unchanged.
+   * - If no chord data is available, the tentative label is left unchanged.
    */
   private confirmFigurations(
     chorale: ParsedChorale,
@@ -479,19 +637,17 @@ export class HarmonyAnalysisService {
       return;
     }
 
-    // Check the chord at the note's exact half-beat position, plus the
-    // enclosing quarter-note beat boundaries (floor and ceil).
-    const exactKey = Math.round(partBeat * 2);
-    const floorKey = Math.floor(partBeat) * 2;
-    const ceilKey = Math.ceil(partBeat) * 2;
-    const keysToCheck = [ ...new Set([ exactKey, floorKey, ceilKey ]) ];
+    // Check the chord at both enclosing quarter-note beats (floor and ceil).
+    const floorBeat = Math.floor(partBeat);
+    const ceilBeat = Math.ceil(partBeat);
+    const beatsToCheck = [ ...new Set([ floorBeat, ceilBeat ]) ];
 
     const noteName = n.note.simpleName;
     let hasChordData = false;
     let isChordTone = false;
 
-    for (const key of keysToCheck) {
-      const chord = chordByBeat.get(key);
+    for (const beat of beatsToCheck) {
+      const chord = chordByBeat.get(beat);
       if (!chord) {
         continue;
       }
