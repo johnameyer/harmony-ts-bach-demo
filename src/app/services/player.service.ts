@@ -106,6 +106,21 @@ export class PlayerService implements OnDestroy {
       clearTimeout(t);
     }
     this.scheduledTimeouts = [];
+
+    // Immediately silence oscillator audio by closing the AudioContext.
+    // It will be recreated on the next play() call.
+    if (this.audioCtx) {
+      void this.audioCtx.close();
+      this.audioCtx = null;
+      this.masterGain = null;
+    }
+
+    // Immediately silence piano audio by disconnecting the sampler from the
+    // Tone.js destination. Reconnect right away so future play() calls work.
+    if (this.pianoSampler) {
+      this.pianoSampler.disconnect();
+      this.pianoSampler.toDestination();
+    }
   }
 
   ngOnDestroy(): void {

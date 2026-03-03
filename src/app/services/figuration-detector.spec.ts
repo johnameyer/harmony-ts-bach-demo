@@ -149,10 +149,12 @@ describe('MusicXmlParserService figuration integration', () => {
   it('labels eighth notes as ascending passing tones when in stepwise ascending context', () => {
     const result = service.parse(PASSING_TONE_XML);
     const sopranoNotes = result.measures[0].partNotes[0];
-    // D4 eighth: C→D→E = ascending passing tone
+    // D4 eighth at beat 1 boundary: no chord is assigned to beat 1 (D4 was filtered
+    // as a figuration when building constraints), so the label stays tentative 'P?'.
     expect(sopranoNotes[1].figuration).toBe('P?');
-    // E4 eighth: D→E→F = ascending passing tone
-    expect(sopranoNotes[2].figuration).toBe('P?');
+    // E4 eighth at beat 1.5: the chord at beat 2 (F4 leading to IV) does not contain E,
+    // so the label is confirmed and the trailing '?' is stripped → 'P'.
+    expect(sopranoNotes[2].figuration).toBe('P');
   });
 
   const SUSPENSION_XML = `<?xml version="1.0" encoding="UTF-8"?>

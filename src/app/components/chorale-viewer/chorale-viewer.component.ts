@@ -190,9 +190,9 @@ export class ChoraleViewerComponent {
 
   protected readonly currentBeat = signal<number | null>(null);
 
-  protected readonly tempo = signal(100);
+  protected readonly tempo = signal(80);
 
-  protected readonly instrument = signal<Instrument>('oscillator');
+  protected readonly instrument = signal<Instrument>('piano');
 
   protected readonly displayBeats = signal(PAGE_SIZE);
 
@@ -205,6 +205,11 @@ export class ChoraleViewerComponent {
   );
 
   constructor() {
+    // Pre-load piano samples so they're ready when the user hits Play.
+    if (!this.player.pianoReady() && !this.player.pianoLoading()) {
+      this.player.loadPiano();
+    }
+
     // Stop playback and reset beat when the chorale changes.
     effect(() => {
       this.chorale();
