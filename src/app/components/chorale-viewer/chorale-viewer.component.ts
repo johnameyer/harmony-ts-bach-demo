@@ -102,7 +102,7 @@ function computeTimedNoteEvents(chorale: ParsedChorale): TimedNoteEvent[] {
                 [class.btn-primary]="instrument() === 'oscillator'"
                 (click)="setInstrument('oscillator')"
                 [disabled]="isPlaying()"
-                aria-label="Use oscillator (triangle)"
+                aria-label="Use oscillator (sine)"
                 title="Oscillator"
               >
                 ∿
@@ -192,7 +192,7 @@ export class ChoraleViewerComponent {
 
   protected readonly tempo = signal(100);
 
-  protected readonly instrument = signal<Instrument>('oscillator');
+  protected readonly instrument = signal<Instrument>('piano');
 
   protected readonly displayBeats = signal(PAGE_SIZE);
 
@@ -205,6 +205,9 @@ export class ChoraleViewerComponent {
   );
 
   constructor() {
+    // Pre-load piano samples immediately since piano is now the default
+    this.player.loadPiano();
+
     // Stop playback and reset beat when the chorale changes.
     effect(() => {
       this.chorale();

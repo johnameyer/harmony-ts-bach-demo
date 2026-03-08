@@ -45,6 +45,10 @@ export class PlayerService implements OnDestroy {
 
   private pianoLoadPromise: Promise<void> | null = null;
 
+  private pianoPart: import('tone').Part | null = null;
+
+  private pianoNoteTimers: ReturnType<typeof setTimeout>[] = [];
+
   // --- Scheduling state ---
   private scheduledTimeouts: ReturnType<typeof setTimeout>[] = [];
 
@@ -102,10 +106,43 @@ export class PlayerService implements OnDestroy {
   }
 
   stop(): void {
+    // Clear all scheduled timeouts (oscillator path and beat callbacks)
     for (const t of this.scheduledTimeouts) {
       clearTimeout(t);
     }
     this.scheduledTimeouts = [];
+
+    // Clear piano note release timers
+    for (const t of this.pianoNoteTimers) {
+      clearTimeout(t);
+    }
+    this.pianoNoteTimers = [];
+
+    // Stop piano playback using recommended approach
+    import('tone').then((Tone) => {
+      // Stop and dispose the Part
+      if (this.pianoPart) {
+        this.pianoPart.stop();
+        this.pianoPart.dispose();
+        this.pianoPart = null;
+      }
+
+      // Release all currently-playing notes on the sampler
+      if (this.pianoSampler) {
+        this.pianoSampler.releaseAll();
+      }
+
+      Tone.getTransport().stop();
+      Tone.getTransport().cancel();
+    });
+
+    // Immediately silence oscillator audio by closing the AudioContext.
+    // It will be recreated on the next play() call.
+    if (this.audioCtx) {
+      void this.audioCtx.close();
+      this.audioCtx = null;
+      this.masterGain = null;
+    }
   }
 
   ngOnDestroy(): void {
@@ -150,11 +187,17 @@ export class PlayerService implements OnDestroy {
 
     for (const event of events) {
       const audioTime = audioStartTime + event.beatStart * secPerBeat;
-      const durationSec = Math.max(event.beatDuration * secPerBeat * 1.05, 0.08);
+      const durationSec = event.beatDuration * secPerBeat;
       this.scheduleOscNote(ctx, event.midi, audioTime, durationSec);
     }
 
-    this.scheduleBeatCallbacks(totalBeats, msPerBeat, onBeat, onStop);
+    // Schedule beat callbacks using setTimeout for oscillator path
+    for (let b = 0; b < totalBeats; b++) {
+      const t = setTimeout(() => onBeat(b), b * msPerBeat + 50);
+      this.scheduledTimeouts.push(t);
+    }
+    const stopT = setTimeout(() => onStop(), totalBeats * msPerBeat + 50);
+    this.scheduledTimeouts.push(stopT);
   }
 
   private scheduleOscNote(
@@ -167,7 +210,7 @@ export class PlayerService implements OnDestroy {
       return;
     }
     const osc = ctx.createOscillator();
-    osc.type = 'triangle';
+    osc.type = 'sine';
     osc.frequency.value = this.midiToHz(midi);
 
     const envGain = ctx.createGain();
@@ -189,34 +232,45 @@ export class PlayerService implements OnDestroy {
     onBeat: (beat: number) => void,
     onStop: () => void,
   ): void {
-    // Schedule beat-callbacks only after Tone.js resolves so that
-    // `audioStartTime` and the beat-timer origin are consistent.
     import('tone').then((Tone) => {
-      const audioStartTime = Tone.getContext().currentTime + 0.05;
-      for (const event of events) {
-        const audioTime = audioStartTime + event.beatStart * secPerBeat;
-        const durationSec = Math.max(event.beatDuration * secPerBeat * 1.05, 0.08);
-        this.pianoSampler!.triggerAttackRelease(
-          this.midiToNoteName(event.midi),
-          durationSec,
-          audioTime,
-        );
-      }
-      this.scheduleBeatCallbacks(totalBeats, msPerBeat, onBeat, onStop);
-    });
-  }
+      // Set tempo on Transport (quarter notes per minute)
+      const tempo = 60 / secPerBeat;
+      Tone.getTransport().bpm.value = tempo;
 
-  private scheduleBeatCallbacks(
-    totalBeats: number,
-    msPerBeat: number,
-    onBeat: (beat: number) => void,
-    onStop: () => void,
-  ): void {
-    for (let b = 0; b < totalBeats; b++) {
-      const t = setTimeout(() => onBeat(b), b * msPerBeat + 50);
-      this.scheduledTimeouts.push(t);
-    }
-    const stopT = setTimeout(() => onStop(), totalBeats * msPerBeat + 50);
-    this.scheduledTimeouts.push(stopT);
+      // Create note events for the Part
+      const noteEvents: Array<[string | number, { midi: number; duration: number }]> = [];
+      for (const event of events) {
+        const startSec = event.beatStart * secPerBeat;
+        const durationSec = event.beatDuration * secPerBeat;
+        noteEvents.push([ startSec, { midi: event.midi, duration: durationSec }]);
+      }
+
+      // Create a Part that triggers the sampler notes
+      // Use triggerAttack only - schedule releases separately with setTimeout
+      // so they can be immediately canceled when stop() is called
+      this.pianoPart = new Tone.Part((time, value: { midi: number; duration: number }) => {
+        const noteName = this.midiToNoteName(value.midi);
+        this.pianoSampler!.triggerAttack(noteName, time);
+        // Schedule the release via setTimeout instead of via Tone scheduling
+        // This way we can cancel it immediately when stop() is called
+        const releaseTimer = setTimeout(() => {
+          this.pianoSampler!.triggerRelease(noteName);
+        }, value.duration * 1000);
+        this.pianoNoteTimers.push(releaseTimer);
+      }, noteEvents);
+
+      this.pianoPart.start(0);
+
+      // Schedule beat callbacks using setTimeout for UI updates (sync with Transport)
+      for (let b = 0; b < totalBeats; b++) {
+        const t = setTimeout(() => onBeat(b), b * msPerBeat + 50);
+        this.scheduledTimeouts.push(t);
+      }
+      const stopT = setTimeout(() => onStop(), totalBeats * msPerBeat + 50);
+      this.scheduledTimeouts.push(stopT);
+
+      // Start transport playback
+      Tone.getTransport().start();
+    });
   }
 }
