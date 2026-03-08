@@ -88,7 +88,7 @@ export function classifyFiguration(
  * Classifies a non-sub-beat (quarter or longer) note as a potential suspension.
  *
  * A suspension holds the same pitch as the previous note into a new harmonic
- * context and then resolves by step.
+ * context, appears in a metrically strong position, and resolves by step.
  *
  * Returns 'Sus?' when the pattern is detected, otherwise null.
  */
@@ -96,11 +96,37 @@ export function classifySuspension(
   current: AbsoluteNote,
   prev: AbsoluteNote | null,
   next: AbsoluteNote | null,
+  currentBeatOffset?: number,
+  nextBeatOffset?: number,
 ): FigurationLabel | null {
   if (!prev || !next) {
     return null;
   }
   if (prev.midi === current.midi && getIntervalSize(current, next) === 2) {
+    // Check metrical strength: suspension must be on a strong beat, resolving to weaker.
+    // Beats are 0-indexed (0=beat1, 1=beat2, 2=beat3, 3=beat4) with fractional subdivisions.
+    // Strength metric: use integer beat for strength, but keep fractional for range checking.
+    if (currentBeatOffset !== undefined && nextBeatOffset !== undefined) {
+      const currentBeat = Math.floor(currentBeatOffset);
+      const nextBeat = Math.floor(nextBeatOffset);
+      
+      // Calculate strength using bit operations on integer beat
+      const currentStrength = (currentBeat & 1) * 2 + ((currentBeat >> 1) & 1);
+      const nextStrength = (nextBeat & 1) * 2 + ((nextBeat >> 1) & 1);
+      
+      // Current beat must be strong (even: beats 0,2)
+      if (currentBeat & 1) {
+        return null;
+      }
+      
+      // If next is in a later measure (nextBeat < currentBeat), suspension can cross measures
+      // If same or earlier measure, next must be weaker than current
+      // Strength values: 0 (strongest), 1, 2, 3 (weakest)
+      // Reject if currentStrength > nextStrength (i.e., next is stronger or equal)
+      if (nextBeat > currentBeat && currentStrength > nextStrength) {
+        return null;
+      }
+    }
     return 'Sus?';
   }
   return null;

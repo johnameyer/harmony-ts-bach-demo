@@ -209,10 +209,30 @@ export class MusicXmlParserService {
     const partCount = measures.reduce((max, m) => Math.max(max, m.partNotes.length), 0);
 
     for (let partIdx = 0; partIdx < partCount; partIdx++) {
-      // Flatten all notes for this part across all measures into a single array.
+      // Flatten all notes for this part across all measures into a single array,
+      // tracking beat offsets for metrical position checking (0-3 within each measure).
       const allNotes: ParsedMeasureNote[] = [];
-      for (const measure of measures) {
-        allNotes.push(...(measure.partNotes[partIdx] ?? []));
+      const beatOffsets: number[] = []; // 0-3 for each beat within its measure
+      const measureIndices: number[] = []; // which measure each note belongs to
+
+      for (let mIdx = 0; mIdx < measures.length; mIdx++) {
+        const measure = measures[mIdx];
+        let beatOffset = 0;
+        for (const note of measure.partNotes[partIdx] ?? []) {
+          beatOffsets.push(beatOffset);
+          allNotes.push(note);
+          measureIndices.push(mIdx);
+          // Estimate duration from vexDuration (q=1, h=2, w=4, 8=0.5, 16=0.25)
+          const durationMap: Record<string, number> = { w: 4, h: 2, q: 1, 8: 0.5, 16: 0.25, 32: 0.125, 64: 0.0625 };
+          const base = note.vexDuration.replace(/d+$/, '');
+          const baseDuration = durationMap[base] ?? 1;
+          let duration = baseDuration;
+          const dotCount = (note.vexDuration.match(/d/g) ?? []).length;
+          for (let i = 0; i < dotCount; i++) {
+            duration += baseDuration / Math.pow(2, i + 1);
+          }
+          beatOffset += duration;
+        }
       }
 
       for (let i = 0; i < allNotes.length; i++) {
@@ -230,17 +250,32 @@ export class MusicXmlParserService {
         }
 
         let next: AbsoluteNote | null = null;
-        for (let j = i + 1; j < allNotes.length; j++) {
-          if (allNotes[j].note) {
-            next = allNotes[j].note;
-            break;
+        let nextBeatOffset: number | undefined;
+        // For suspensions, get the immediate next NOTE (skip rests only)
+        if (i + 1 < allNotes.length && allNotes[i + 1].note) {
+          next = allNotes[i + 1].note;
+          nextBeatOffset = beatOffsets[i + 1];
+        } else {
+          // If immediate next is a rest, skip to first non-rest after it
+          for (let j = i + 1; j < allNotes.length; j++) {
+            if (allNotes[j].note) {
+              next = allNotes[j].note;
+              nextBeatOffset = beatOffsets[j];
+              break;
+            }
           }
         }
 
         if (isSubBeat(current.vexDuration)) {
           current.figuration = classifyFiguration(current.note, prev, next);
         } else {
-          current.figuration = classifySuspension(current.note, prev, next);
+          current.figuration = classifySuspension(
+            current.note,
+            prev,
+            next,
+            beatOffsets[i],
+            nextBeatOffset,
+          );
         }
       }
     }

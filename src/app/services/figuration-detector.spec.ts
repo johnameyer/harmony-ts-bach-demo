@@ -155,9 +155,42 @@ describe('MusicXmlParserService figuration integration', () => {
     expect(sopranoNotes[2].figuration).toBe('P?');
   });
 
-  const SUSPENSION_XML = `<?xml version="1.0" encoding="UTF-8"?>
+  it('detects suspension on strong beat 3 resolving to weak beat 4', () => {
+    const SUSPENSION_BEAT_3_XML = `<?xml version="1.0" encoding="UTF-8"?>
 <score-partwise version="3.1">
-  <work><work-title>Suspension Test</work-title></work>
+  <work><work-title>Suspension on Beat 3</work-title></work>
+  <part-list>
+    <score-part id="P1"><part-name>Soprano</part-name></score-part>
+  </part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes><divisions>2</divisions></attributes>
+      <note><pitch><step>E</step><octave>4</octave></pitch><duration>2</duration><type>quarter</type></note>
+      <note><pitch><step>F</step><octave>4</octave></pitch><duration>2</duration><type>quarter</type></note>
+      <note><pitch><step>D</step><octave>4</octave></pitch><duration>2</duration><type>quarter</type></note>
+      <note><pitch><step>D</step><octave>4</octave></pitch><duration>2</duration><type>quarter</type></note>
+    </measure>
+    <measure number="2">
+      <attributes><divisions>2</divisions></attributes>
+      <note><pitch><step>C</step><octave>4</octave></pitch><duration>4</duration><type>half</type></note>
+    </measure>
+  </part>
+</score-partwise>`;
+    const result = service.parse(SUSPENSION_BEAT_3_XML);
+    const notes = result.measures[0].partNotes[0];
+    // E4 (beat 1), F4 (beat 2): no suspension
+    expect(notes[0].figuration).toBeFalsy();
+    expect(notes[1].figuration).toBeFalsy();
+    // D4 (beat 3, strong): no prev D4 → no Sus?
+    expect(notes[2].figuration).toBeFalsy();
+    // D4 (beat 4, weak): beat 4 is weak → no Sus?
+    expect(notes[3].figuration).toBeFalsy();
+  });
+
+  it('detects suspension on strong beat 1 resolving to weak beat 2', () => {
+    const SUSPENSION_1_TO_2_XML = `<?xml version="1.0" encoding="UTF-8"?>
+<score-partwise version="3.1">
+  <work><work-title>Suspension Beat 1 to 2</work-title></work>
   <part-list>
     <score-part id="P1"><part-name>Soprano</part-name></score-part>
   </part-list>
@@ -166,20 +199,46 @@ describe('MusicXmlParserService figuration integration', () => {
       <attributes><divisions>2</divisions></attributes>
       <note><pitch><step>D</step><octave>4</octave></pitch><duration>2</duration><type>quarter</type></note>
       <note><pitch><step>D</step><octave>4</octave></pitch><duration>2</duration><type>quarter</type></note>
-      <note><pitch><step>C</step><octave>4</octave></pitch><duration>4</duration><type>half</type></note>
+      <note><pitch><step>C</step><octave>4</octave></pitch><duration>2</duration><type>quarter</type></note>
+      <note><pitch><step>E</step><octave>4</octave></pitch><duration>2</duration><type>quarter</type></note>
     </measure>
   </part>
 </score-partwise>`;
-
-  it('labels repeated quarter note resolving by step as suspension', () => {
-    const result = service.parse(SUSPENSION_XML);
+    const result = service.parse(SUSPENSION_1_TO_2_XML);
     const notes = result.measures[0].partNotes[0];
-    // First D4: no prev → no Sus?
+    // Beat 1: D4 (strong, no prev D)
     expect(notes[0].figuration).toBeFalsy();
-    // Second D4: prev=D4, next=C4 (step down) → Sus?
-    expect(notes[1].figuration).toBe('Sus?');
-    // C4: prev=D4, not a repeated note → no Sus?
+    // Beat 2: D4 (weak) repeated, resolves to C (step down) → should NOT be Sus?
+    expect(notes[1].figuration).toBeFalsy();
+  });
+
+  it('detects suspension on strong beat 3 resolving to weak beat 4', () => {
+    const SUSPENSION_3_TO_4_XML = `<?xml version="1.0" encoding="UTF-8"?>
+<score-partwise version="3.1">
+  <work><work-title>Suspension Beat 3 to 4</work-title></work>
+  <part-list>
+    <score-part id="P1"><part-name>Soprano</part-name></score-part>
+  </part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes><divisions>2</divisions></attributes>
+      <note><pitch><step>C</step><octave>4</octave></pitch><duration>2</duration><type>quarter</type></note>
+      <note><pitch><step>D</step><octave>4</octave></pitch><duration>2</duration><type>quarter</type></note>
+      <note><pitch><step>E</step><octave>4</octave></pitch><duration>2</duration><type>quarter</type></note>
+      <note><pitch><step>E</step><octave>4</octave></pitch><duration>2</duration><type>quarter</type></note>
+    </measure>
+    <measure number="2">
+      <attributes><divisions>2</divisions></attributes>
+      <note><pitch><step>D</step><octave>4</octave></pitch><duration>4</duration><type>half</type></note>
+    </measure>
+  </part>
+</score-partwise>`;
+    const result = service.parse(SUSPENSION_3_TO_4_XML);
+    const notes = result.measures[0].partNotes[0];
+    // Beat 3: E4 (strong, no prev E)
     expect(notes[2].figuration).toBeFalsy();
+    // Beat 4: E4 (weak) repeated, resolves to D (step down) → should NOT be Sus?
+    expect(notes[3].figuration).toBeFalsy();
   });
 
   const ANTICIPATION_XML = `<?xml version="1.0" encoding="UTF-8"?>
