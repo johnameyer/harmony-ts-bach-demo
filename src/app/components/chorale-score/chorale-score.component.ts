@@ -203,7 +203,7 @@ export class ChoraleScoreComponent {
       const rowMeasures = chorale.measures.slice(startMeasure, endMeasure);
 
       try {
-        this.renderRow(rowEl, rowId, rowMeasures, keyName, timeSig, rowIdx === 0, rowStartBeat);
+        this.renderRow(rowEl, rowId, rowMeasures, keyName, timeSig, rowIdx === 0, rowStartBeat, startMeasure);
       } catch {
         // Skip rows that fail to render (e.g. no DOM context in SSR)
       }
@@ -225,6 +225,7 @@ export class ChoraleScoreComponent {
     timeSig: string,
     isFirstRow: boolean,
     rowStartBeat: number,
+    startMeasureIndex: number,
   ): void {
     container.id = containerId;
     const vf = new Factory({
@@ -345,6 +346,10 @@ export class ChoraleScoreComponent {
     if (isFirstRow) {
       bassStave.addTimeSignature(timeSig);
     }
+
+    // Add measure number at the start of this row (on treble stave only)
+    const measureNumber = startMeasureIndex + 1;
+    trebleStave.setMeasure(measureNumber);
 
     system.addConnector('brace');
     system.addConnector('singleLeft');
